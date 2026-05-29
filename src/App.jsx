@@ -657,13 +657,30 @@ function FeedCard({ pen, ration, event, onConfirm, feederName }) {
 
 // ── FEEDER VIEW ───────────────────────────────────────────────────────────────
 
+function getCurrentFeedPeriod() {
+  const hour = new Date().getHours();
+  const minute = new Date().getMinutes();
+  if (hour === 0 && minute === 0) return "PM";
+  if (hour < 13) return "AM";
+  return "PM";
+}
+
 function FeederView({ pens, rations, events, feeders, onConfirm }) {
   const [feederName, setFeederName] = useState(feeders[0] || "");
+  const [feedPeriod, setFeedPeriod] = useState(getCurrentFeedPeriod);
 
-  const amEvents = events.filter(e => e.time_of_day === "AM");
-  const pmEvents = events.filter(e => e.time_of_day === "PM");
-  const doneCount = events.filter(e => e.status === "done").length;
-  const total = events.length || 1;
+  useEffect(() => {
+    const timer = setInterval(() => setFeedPeriod(getCurrentFeedPeriod()), 60000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const visibleEvents = events.filter(e => e.time_of_day === feedPeriod);
+  const doneCount = visibleEvents.filter(e => e.status === "done").length;
+  const total = visibleEvents.length || 1;
+
+  const isAM = feedPeriod === "AM";
+  const periodLabel = isAM ? "Morning · AM Feed" : "Afternoon · PM Feed";
+  const periodTime = isAM ? "12:01 AM – 12:59 PM" : "1:00 PM – 12:00 AM";
 
   function renderCards(evts) {
     return evts.map(ev => {
@@ -686,16 +703,23 @@ function FeederView({ pens, rations, events, feeders, onConfirm }) {
 
       <div className="progress-wrap">
         <div className="progress-header">
-          <span className="progress-label">Today's progress</span>
-          <span className="progress-count">{doneCount} / {events.length} done</span>
+          <span className="progress-label">{periodLabel}</span>
+          <span className="progress-count">{doneCount} / {visibleEvents.length} done</span>
         </div>
         <div className="progress-track">
           <div className="progress-fill" style={{ width: `${Math.round(doneCount / total * 100)}%` }} />
         </div>
+        <div style={{ fontSize: 10, fontFamily: "var(--mono)", color: "var(--text-3)", marginTop: 4 }}>
+          {periodTime}
+        </div>
       </div>
 
-      {amEvents.length > 0 && <><div className="section-label">Morning · AM Feed</div>{renderCards(amEvents)}</>}
-      {pmEvents.length > 0 && <><div className="section-label">Afternoon · PM Feed</div>{renderCards(pmEvents)}</>}
+      {visibleEvents.length > 0
+        ? renderCards(visibleEvents)
+        : <div style={{ textAlign: "center", fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-3)", paddingTop: 40 }}>
+            No {feedPeriod} feedings scheduled for today
+          </div>
+      }
     </div>
   );
 }
