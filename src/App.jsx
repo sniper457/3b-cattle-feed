@@ -474,7 +474,7 @@ function CalendarModal({ pen, rations, existingSchedule, timeOfDay, onSave, onCl
 
   // Pre-mark dates that already have a schedule
   const scheduledMap = {};
-  (existingSchedule || []).forEach(s => { scheduledMap[s.date] = s; });
+  (existingSchedule || []).filter(s => s.pen_id === pen.id && rations.find(r => r.id === s.ration_id)?.time_of_day === timeOfDay).forEach(s => { scheduledMap[s.date] = s; });
 
   const monthName = new Date(viewYear, viewMonth).toLocaleDateString("en-US", { month: "long", year: "numeric" });
   const daysInMonth = getDaysInMonth(viewYear, viewMonth);
@@ -521,7 +521,7 @@ function CalendarModal({ pen, rations, existingSchedule, timeOfDay, onSave, onCl
     <div className="modal-backdrop" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="modal">
         <div className="modal-handle" />
-        <div className="modal-title">Schedule {timeOfDay} rations 2014 {pen.name}</div>
+        <div className="modal-title">Schedule {timeOfDay} rations - {pen.name}</div>
         <div className="modal-sub">Tap days to apply a ration. Dots = already scheduled.</div>
 
         <div className="cal-nav">
