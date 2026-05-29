@@ -49,6 +49,19 @@ const db = {
       method: "PATCH",
       body: JSON.stringify(updates),
     }),
+  // Schedule: upsert pen config for specific dates
+  getPenSchedule: (penId) =>
+    sbFetch(`/pen_schedule?pen_id=eq.${penId}&date=gte.${new Date().toISOString().split("T")[0]}&order=date`),
+  upsertPenSchedule: (rows) =>
+    sbFetch("/pen_schedule", {
+      method: "POST",
+      headers: { "Prefer": "resolution=merge-duplicates,return=representation" },
+      body: JSON.stringify(rows),
+    }),
+  deletePenSchedule: (penId, dates) =>
+    sbFetch(`/pen_schedule?pen_id=eq.${penId}&date=in.(${dates.join(",")})`, {
+      method: "DELETE",
+    }),
 };
 
 // ── REALTIME ──────────────────────────────────────────────────────────────────
@@ -57,6 +70,7 @@ function subscribeRealtime(table, onChange) {
   const url = `${SUPABASE_URL}/realtime/v1/websocket?apikey=${SUPABASE_ANON_KEY}&vsn=1.0.0`;
   const ws = new WebSocket(url);
   const topic = `realtime:public:${table}`;
+  let heartbeat;
 
   ws.onopen = () => {
     ws.send(JSON.stringify({ topic, event: "phx_join", payload: {
@@ -67,17 +81,16 @@ function subscribeRealtime(table, onChange) {
   ws.onmessage = (msg) => {
     try {
       const data = JSON.parse(msg.data);
-      if (data.event === "INSERT" || data.event === "UPDATE" || data.event === "DELETE") {
-        onChange(data);
-      }
-      // Heartbeat
+      if (["INSERT","UPDATE","DELETE"].includes(data.event)) onChange(data);
       if (data.event === "phx_reply" && data.payload?.status === "ok") {
-        setInterval(() => ws.send(JSON.stringify({ topic: "phoenix", event: "heartbeat", payload: {}, ref: "hb" })), 25000);
+        heartbeat = setInterval(() =>
+          ws.send(JSON.stringify({ topic: "phoenix", event: "heartbeat", payload: {}, ref: "hb" }))
+        , 25000);
       }
     } catch (_) {}
   };
 
-  return () => ws.close();
+  return () => { clearInterval(heartbeat); ws.close(); };
 }
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
@@ -100,6 +113,14 @@ function todayStr() {
 function fmtTime(isoStr) {
   if (!isoStr) return "";
   return new Date(isoStr).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+}
+
+function toLocalDateStr(date) {
+  return date.toLocaleDateString("en-CA"); // YYYY-MM-DD in local time
+}
+
+function getDaysInMonth(year, month) {
+  return new Date(year, month + 1, 0).getDate();
 }
 
 // ── STYLES ────────────────────────────────────────────────────────────────────
@@ -134,7 +155,6 @@ const css = `
   body { background: var(--bg); font-family: var(--sans); color: var(--text); }
   .app { max-width: 480px; margin: 0 auto; min-height: 100vh; }
 
-  /* Loading */
   .loading {
     display: flex; flex-direction: column; align-items: center;
     justify-content: center; height: 60vh; gap: 12px;
@@ -147,14 +167,12 @@ const css = `
   @keyframes spin { to { transform: rotate(360deg); } }
   .loading-text { font-family: var(--mono); font-size: 12px; color: var(--text-3); }
 
-  /* Error */
   .error-bar {
     background: #FFF0F0; border: 1px solid #FFCACA;
     border-radius: 8px; padding: 10px 14px; margin: 12px 16px;
     font-size: 12px; font-family: var(--mono); color: var(--danger);
   }
 
-  /* Header */
   .header {
     background: var(--text); color: var(--bg);
     padding: 16px 20px 14px;
@@ -168,12 +186,10 @@ const css = `
     font-family: var(--mono); font-size: 10px;
     padding: 4px 10px; border-radius: 20px;
     border: 1px solid rgba(255,255,255,0.2);
-    color: rgba(255,255,255,0.7); cursor: pointer; transition: all 0.15s;
-    background: none;
+    color: rgba(255,255,255,0.7); cursor: pointer; transition: all 0.15s; background: none;
   }
   .role-badge:hover { background: rgba(255,255,255,0.1); }
 
-  /* Nav */
   .nav { display: flex; background: var(--surface); border-bottom: 1px solid var(--border); }
   .nav-tab {
     flex: 1; padding: 12px; text-align: center;
@@ -185,7 +201,6 @@ const css = `
 
   .content { padding: 16px; }
 
-  /* Feeder bar */
   .feeder-bar {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: 10px; padding: 12px 14px; margin-bottom: 14px;
@@ -197,7 +212,6 @@ const css = `
     border: none; background: none; color: var(--text); flex: 1; cursor: pointer; outline: none;
   }
 
-  /* Progress */
   .progress-wrap { margin-bottom: 16px; }
   .progress-header { display: flex; justify-content: space-between; margin-bottom: 6px; }
   .progress-label { font-size: 12px; font-family: var(--mono); color: var(--text-3); }
@@ -205,13 +219,11 @@ const css = `
   .progress-track { height: 3px; background: var(--border); border-radius: 2px; }
   .progress-fill { height: 3px; background: var(--accent); border-radius: 2px; transition: width 0.4s ease; }
 
-  /* Section label */
   .section-label {
     font-size: 10px; font-family: var(--mono); letter-spacing: 0.08em;
     text-transform: uppercase; color: var(--text-3); margin: 18px 0 8px;
   }
 
-  /* Feed card */
   .feed-card {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: 12px; padding: 14px; margin-bottom: 10px; transition: opacity 0.2s;
@@ -222,8 +234,7 @@ const css = `
 
   .pen-tag {
     display: inline-block; font-family: var(--mono);
-    font-size: 10px; font-weight: 500;
-    padding: 3px 8px; border-radius: 5px; margin-bottom: 6px;
+    font-size: 10px; font-weight: 500; padding: 3px 8px; border-radius: 5px; margin-bottom: 6px;
   }
   .pen-tag.fp { background: var(--fp-light); color: var(--fp); }
   .pen-tag.cp { background: var(--cp-light); color: var(--cp); }
@@ -232,8 +243,7 @@ const css = `
   .feed-card-meta { font-size: 12px; color: var(--text-2); font-family: var(--mono); }
 
   .check-btn {
-    width: 38px; height: 38px; border-radius: 10px;
-    border: 1.5px solid var(--border);
+    width: 38px; height: 38px; border-radius: 10px; border: 1.5px solid var(--border);
     background: none; cursor: pointer; flex-shrink: 0;
     display: flex; align-items: center; justify-content: center;
     font-size: 16px; transition: all 0.15s; color: var(--text-3);
@@ -244,18 +254,15 @@ const css = `
 
   .status-badge {
     display: inline-flex; align-items: center; gap: 5px;
-    font-size: 11px; font-family: var(--mono);
-    padding: 4px 9px; border-radius: 6px; margin-top: 8px;
+    font-size: 11px; font-family: var(--mono); padding: 4px 9px; border-radius: 6px; margin-top: 8px;
   }
   .status-badge.pending { background: var(--warn-light); color: var(--warn); }
   .status-badge.done { background: var(--accent-light); color: var(--accent-text); }
 
   .expand-btn {
     background: none; border: none; cursor: pointer;
-    font-size: 11px; font-family: var(--mono);
-    color: var(--text-3); margin-top: 10px;
-    display: flex; align-items: center; gap: 4px;
-    padding: 0; transition: color 0.15s;
+    font-size: 11px; font-family: var(--mono); color: var(--text-3); margin-top: 10px;
+    display: flex; align-items: center; gap: 4px; padding: 0; transition: color 0.15s;
   }
   .expand-btn:hover { color: var(--text-2); }
 
@@ -303,28 +310,24 @@ const css = `
   .field-input {
     flex: 1; font-family: var(--mono); font-size: 12px;
     border: 1px solid var(--border); border-radius: 7px;
-    padding: 6px 10px; background: var(--bg); color: var(--text);
-    outline: none; transition: border-color 0.15s;
+    padding: 6px 10px; background: var(--bg); color: var(--text); outline: none; transition: border-color 0.15s;
   }
   .field-input:focus { border-color: var(--accent); }
   .field-select {
     flex: 1; font-family: var(--mono); font-size: 12px;
     border: 1px solid var(--border); border-radius: 7px;
-    padding: 6px 10px; background: var(--bg); color: var(--text);
-    outline: none; cursor: pointer;
+    padding: 6px 10px; background: var(--bg); color: var(--text); outline: none; cursor: pointer;
   }
   .toggle-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
   .toggle-label { font-size: 11px; font-family: var(--mono); color: var(--text-3); }
   .toggle {
-    width: 36px; height: 20px; border-radius: 10px;
-    background: var(--border); cursor: pointer; position: relative;
-    transition: background 0.2s; border: none; flex-shrink: 0;
+    width: 36px; height: 20px; border-radius: 10px; background: var(--border);
+    cursor: pointer; position: relative; transition: background 0.2s; border: none; flex-shrink: 0;
   }
   .toggle.on { background: var(--accent); }
   .toggle::after {
     content: ''; position: absolute; top: 3px; left: 3px;
-    width: 14px; height: 14px; border-radius: 50%;
-    background: white; transition: left 0.2s;
+    width: 14px; height: 14px; border-radius: 50%; background: white; transition: left 0.2s;
   }
   .toggle.on::after { left: 19px; }
 
@@ -343,10 +346,16 @@ const css = `
   }
   .save-btn:hover { opacity: 0.85; }
   .save-btn:disabled { opacity: 0.5; cursor: default; }
-  .saved-badge {
-    text-align: center; font-size: 11px; font-family: var(--mono);
-    color: var(--accent); margin-top: 6px;
+  .saved-badge { text-align: center; font-size: 11px; font-family: var(--mono); color: var(--accent); margin-top: 6px; }
+
+  /* Schedule button */
+  .schedule-btn {
+    width: 100%; margin-top: 8px; padding: 8px;
+    background: none; color: var(--fp); border: 1px solid var(--fp-light);
+    border-radius: 8px; font-family: var(--mono); font-size: 12px;
+    cursor: pointer; transition: all 0.15s; background: var(--fp-light);
   }
+  .schedule-btn:hover { opacity: 0.8; }
 
   /* Log */
   .log-row {
@@ -362,12 +371,210 @@ const css = `
   .empty-log { font-size: 12px; font-family: var(--mono); color: var(--text-3); padding: 12px 0; text-align: center; }
 
   .sync-dot {
-    width: 6px; height: 6px; border-radius: 50%;
-    background: var(--accent); display: inline-block; margin-right: 6px;
-    animation: pulse 2s ease-in-out infinite;
+    width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+    display: inline-block; margin-right: 6px; animation: pulse 2s ease-in-out infinite;
   }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+  /* ── CALENDAR MODAL ── */
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+    z-index: 200; display: flex; align-items: flex-end; justify-content: center;
+  }
+  .modal {
+    background: var(--surface); border-radius: 20px 20px 0 0;
+    width: 100%; max-width: 480px; padding: 20px 20px 36px;
+    animation: slideUp 0.25s ease;
+  }
+  @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+
+  .modal-handle { width: 36px; height: 4px; background: var(--border); border-radius: 2px; margin: 0 auto 16px; }
+  .modal-title { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+  .modal-sub { font-size: 12px; font-family: var(--mono); color: var(--text-3); margin-bottom: 16px; }
+
+  .cal-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .cal-month { font-size: 13px; font-weight: 500; font-family: var(--mono); }
+  .cal-arrow {
+    background: none; border: 1px solid var(--border); border-radius: 6px;
+    width: 28px; height: 28px; cursor: pointer; font-size: 14px;
+    display: flex; align-items: center; justify-content: center; color: var(--text-2);
+  }
+  .cal-arrow:hover { background: var(--bg); }
+
+  .cal-grid { display: grid; grid-template-columns: repeat(7,1fr); gap: 4px; }
+  .cal-dow {
+    text-align: center; font-size: 10px; font-family: var(--mono);
+    color: var(--text-3); padding-bottom: 6px; letter-spacing: 0.05em;
+  }
+  .cal-day {
+    aspect-ratio: 1; display: flex; align-items: center; justify-content: center;
+    border-radius: 8px; font-size: 13px; font-family: var(--mono);
+    cursor: pointer; border: 1.5px solid transparent; transition: all 0.1s;
+    color: var(--text);
+  }
+  .cal-day:hover:not(.past):not(.empty) { background: var(--bg); border-color: var(--border); }
+  .cal-day.past { color: var(--text-3); cursor: default; }
+  .cal-day.today { border-color: var(--border); font-weight: 500; }
+  .cal-day.selected { background: var(--accent); color: white; border-color: var(--accent); }
+  .cal-day.today.selected { background: var(--accent); }
+  .cal-day.empty { cursor: default; }
+  .cal-day.has-schedule { position: relative; }
+  .cal-day.has-schedule::after {
+    content: ''; position: absolute; bottom: 3px; left: 50%; transform: translateX(-50%);
+    width: 4px; height: 4px; border-radius: 50%; background: var(--accent);
+  }
+  .cal-day.selected.has-schedule::after { background: white; }
+
+  .cal-ration-row { display: flex; align-items: center; gap: 8px; margin: 14px 0 6px; }
+  .cal-ration-label { font-size: 11px; font-family: var(--mono); color: var(--text-3); width: 70px; flex-shrink: 0; }
+
+  .modal-actions { display: flex; gap: 8px; margin-top: 16px; }
+  .modal-cancel {
+    flex: 1; padding: 10px; background: none; border: 1px solid var(--border);
+    border-radius: 8px; font-family: var(--mono); font-size: 12px; cursor: pointer; color: var(--text-2);
+  }
+  .modal-save {
+    flex: 2; padding: 10px; background: var(--accent); border: none; color: white;
+    border-radius: 8px; font-family: var(--mono); font-size: 12px; cursor: pointer;
+  }
+  .modal-save:disabled { opacity: 0.5; cursor: default; }
+
+  .selected-count {
+    font-size: 11px; font-family: var(--mono); color: var(--accent);
+    margin-top: 10px; text-align: center; min-height: 16px;
+  }
 `;
+
+// ── CALENDAR MODAL ────────────────────────────────────────────────────────────
+
+function CalendarModal({ pen, rations, existingSchedule, onSave, onClose }) {
+  const today = new Date();
+  today.setHours(0,0,0,0);
+  const todayStr = toLocalDateStr(today);
+
+  const [viewYear, setViewYear] = useState(today.getFullYear());
+  const [viewMonth, setViewMonth] = useState(today.getMonth());
+  const [selectedDates, setSelectedDates] = useState(new Set());
+  const [rationId, setRationId] = useState(pen.ration_id);
+  const [useDdg, setUseDdg] = useState(pen.use_ddg);
+  const [saving, setSaving] = useState(false);
+
+  // Pre-mark dates that already have a schedule
+  const scheduledMap = {};
+  (existingSchedule || []).forEach(s => { scheduledMap[s.date] = s; });
+
+  const monthName = new Date(viewYear, viewMonth).toLocaleDateString("en-US", { month: "long", year: "numeric" });
+  const daysInMonth = getDaysInMonth(viewYear, viewMonth);
+  const firstDow = new Date(viewYear, viewMonth, 1).getDay();
+
+  function toggleDate(dateStr) {
+    const d = new Date(dateStr);
+    if (d < today) return;
+    setSelectedDates(prev => {
+      const next = new Set(prev);
+      next.has(dateStr) ? next.delete(dateStr) : next.add(dateStr);
+      return next;
+    });
+  }
+
+  function prevMonth() {
+    if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y - 1); }
+    else setViewMonth(m => m - 1);
+  }
+  function nextMonth() {
+    if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y + 1); }
+    else setViewMonth(m => m + 1);
+  }
+
+  async function handleSave() {
+    if (selectedDates.size === 0) return;
+    setSaving(true);
+    const rows = [...selectedDates].map(date => ({
+      pen_id: pen.id, date, ration_id: rationId, use_ddg: useDdg,
+    }));
+    await onSave(pen.id, rows);
+    setSaving(false);
+    onClose();
+  }
+
+  const days = [];
+  for (let i = 0; i < firstDow; i++) days.push(null);
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = `${viewYear}-${String(viewMonth+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+    days.push(dateStr);
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal">
+        <div className="modal-handle" />
+        <div className="modal-title">Schedule rations — {pen.name}</div>
+        <div className="modal-sub">Tap days to apply a ration. Dots = already scheduled.</div>
+
+        <div className="cal-nav">
+          <button className="cal-arrow" onClick={prevMonth}>‹</button>
+          <span className="cal-month">{monthName}</span>
+          <button className="cal-arrow" onClick={nextMonth}>›</button>
+        </div>
+
+        <div className="cal-grid">
+          {["Su","Mo","Tu","We","Th","Fr","Sa"].map(d => (
+            <div key={d} className="cal-dow">{d}</div>
+          ))}
+          {days.map((dateStr, i) => {
+            if (!dateStr) return <div key={`e${i}`} className="cal-day empty" />;
+            const isPast = dateStr < todayStr;
+            const isToday = dateStr === todayStr;
+            const isSelected = selectedDates.has(dateStr);
+            const hasSchedule = !!scheduledMap[dateStr];
+            let cls = "cal-day";
+            if (isPast) cls += " past";
+            if (isToday) cls += " today";
+            if (isSelected) cls += " selected";
+            if (hasSchedule) cls += " has-schedule";
+            return (
+              <div key={dateStr} className={cls} onClick={() => toggleDate(dateStr)}>
+                {parseInt(dateStr.split("-")[2])}
+              </div>
+            );
+          })}
+        </div>
+
+        {selectedDates.size > 0 && (
+          <div className="selected-count">
+            {selectedDates.size} day{selectedDates.size > 1 ? "s" : ""} selected
+          </div>
+        )}
+
+        <div className="cal-ration-row">
+          <span className="cal-ration-label">Ration</span>
+          <select className="field-select" value={rationId} onChange={e => setRationId(e.target.value)}>
+            {rations.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+          </select>
+        </div>
+
+        <div className="toggle-row" style={{ marginTop: 8 }}>
+          <span className="cal-ration-label toggle-label">Use DDG</span>
+          <button className={`toggle${useDdg ? " on" : ""}`} onClick={() => setUseDdg(v => !v)} />
+          <span className="toggle-label" style={{ color: useDdg ? "var(--accent)" : "var(--text-3)" }}>
+            {useDdg ? "Yes" : "No"}
+          </span>
+        </div>
+
+        <div className="modal-actions">
+          <button className="modal-cancel" onClick={onClose}>Cancel</button>
+          <button
+            className="modal-save"
+            onClick={handleSave}
+            disabled={selectedDates.size === 0 || saving}
+          >
+            {saving ? "Saving…" : `Apply to ${selectedDates.size || 0} day${selectedDates.size !== 1 ? "s" : ""}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ── COMPONENTS ────────────────────────────────────────────────────────────────
 
@@ -376,9 +583,7 @@ function RationDetail({ ration, useDdg, totalLbs }) {
   return (
     <div>
       <table className="ration-table">
-        <thead>
-          <tr><th>Ingredient</th><th>%</th><th>Lbs</th></tr>
-        </thead>
+        <thead><tr><th>Ingredient</th><th>%</th><th>Lbs</th></tr></thead>
         <tbody>
           {ingredients.map(i => (
             <tr key={i.name}>
@@ -387,9 +592,7 @@ function RationDetail({ ration, useDdg, totalLbs }) {
               <td>{i.lbs}</td>
             </tr>
           ))}
-          <tr>
-            <td>Total</td><td>100%</td><td>{totalLbs}</td>
-          </tr>
+          <tr><td>Total</td><td>100%</td><td>{totalLbs}</td></tr>
         </tbody>
       </table>
       {!useDdg && <div className="ddg-note">★ No DDG formula</div>}
@@ -420,9 +623,7 @@ function FeedCard({ pen, ration, event, onConfirm, feederName }) {
             {ration.name} · {totalLbs} lbs · {pen.head_count} head
           </div>
           <div className={`status-badge ${isDone ? "done" : "pending"}`}>
-            {isDone
-              ? `✓ ${event.confirmed_by} · ${fmtTime(event.confirmed_at)}`
-              : "Pending"}
+            {isDone ? `✓ ${event.confirmed_by} · ${fmtTime(event.confirmed_at)}` : "Pending"}
           </div>
           <button className="expand-btn" onClick={() => setExpanded(e => !e)}>
             {expanded ? "▴ Hide ration" : "▾ Show ration"}
@@ -433,7 +634,6 @@ function FeedCard({ pen, ration, event, onConfirm, feederName }) {
           className={`check-btn${isDone ? " done" : ""}`}
           onClick={handleConfirm}
           disabled={isDone || confirming}
-          aria-label={isDone ? "Confirmed" : `Mark ${pen.name} done`}
         >
           {confirming ? "…" : "✓"}
         </button>
@@ -457,16 +657,7 @@ function FeederView({ pens, rations, events, feeders, onConfirm }) {
       const pen = pens.find(p => p.id === ev.pen_id);
       const ration = rations.find(r => r.id === pen?.ration_id);
       if (!pen || !ration) return null;
-      return (
-        <FeedCard
-          key={ev.id}
-          pen={pen}
-          ration={ration}
-          event={ev}
-          onConfirm={onConfirm}
-          feederName={feederName}
-        />
-      );
+      return <FeedCard key={ev.id} pen={pen} ration={ration} event={ev} onConfirm={onConfirm} feederName={feederName} />;
     });
   }
 
@@ -474,11 +665,7 @@ function FeederView({ pens, rations, events, feeders, onConfirm }) {
     <div className="content">
       <div className="feeder-bar">
         <span className="feeder-label">Feeder:</span>
-        <select
-          className="feeder-select"
-          value={feederName}
-          onChange={e => setFeederName(e.target.value)}
-        >
+        <select className="feeder-select" value={feederName} onChange={e => setFeederName(e.target.value)}>
           {feeders.map(f => <option key={f}>{f}</option>)}
         </select>
         <span className="sync-dot" title="Live sync active" />
@@ -494,39 +681,27 @@ function FeederView({ pens, rations, events, feeders, onConfirm }) {
         </div>
       </div>
 
-      {amEvents.length > 0 && (
-        <>
-          <div className="section-label">Morning · AM Feed</div>
-          {renderCards(amEvents)}
-        </>
-      )}
-      {pmEvents.length > 0 && (
-        <>
-          <div className="section-label">Afternoon · PM Feed</div>
-          {renderCards(pmEvents)}
-        </>
-      )}
+      {amEvents.length > 0 && <><div className="section-label">Morning · AM Feed</div>{renderCards(amEvents)}</>}
+      {pmEvents.length > 0 && <><div className="section-label">Afternoon · PM Feed</div>{renderCards(pmEvents)}</>}
     </div>
   );
 }
 
-// ── ADMIN VIEW ────────────────────────────────────────────────────────────────
+// ── ADMIN PEN CARD ────────────────────────────────────────────────────────────
 
-function PenCard({ pen, rations, onSave }) {
+function PenCard({ pen, rations, schedule, onSave, onSaveSchedule }) {
   const [local, setLocal] = useState({ ...pen });
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [showCal, setShowCal] = useState(false);
   const dirty = JSON.stringify(local) !== JSON.stringify(pen);
 
   const ration = rations.find(r => r.id === local.ration_id);
   const calcLbs = ration ? Math.round(local.head_count * ration.lbs_per_head * 10) / 10 : 0;
-  const totalLbs = local.total_lbs_override !== null && local.total_lbs_override !== undefined
+  const totalLbs = (local.total_lbs_override !== null && local.total_lbs_override !== undefined)
     ? local.total_lbs_override : calcLbs;
 
-  function set(field, value) {
-    setLocal(prev => ({ ...prev, [field]: value }));
-    setSaved(false);
-  }
+  function set(field, value) { setLocal(prev => ({ ...prev, [field]: value })); setSaved(false); }
 
   async function handleSave() {
     setSaving(true);
@@ -536,77 +711,85 @@ function PenCard({ pen, rations, onSave }) {
       use_ddg: local.use_ddg,
       total_lbs_override: local.total_lbs_override,
     });
-    setSaving(false);
-    setSaved(true);
+    setSaving(false); setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   }
 
+  const upcomingCount = (schedule || []).length;
+
   return (
-    <div className="pen-admin-card">
-      <div className="pen-admin-header">
-        <div className="pen-admin-name">{pen.name}</div>
-        <div className={`pen-tag ${pen.type.toLowerCase()}`}>{pen.type}</div>
-      </div>
+    <>
+      <div className="pen-admin-card">
+        <div className="pen-admin-header">
+          <div className="pen-admin-name">{pen.name}</div>
+          <div className={`pen-tag ${pen.type.toLowerCase()}`}>{pen.type}</div>
+        </div>
 
-      <div className="field-row">
-        <span className="field-label">Head count</span>
-        <input
-          className="field-input" type="number" min="1"
-          value={local.head_count}
-          onChange={e => set("head_count", parseInt(e.target.value) || 1)}
-        />
-      </div>
+        <div className="field-row">
+          <span className="field-label">Head count</span>
+          <input className="field-input" type="number" min="1"
+            value={local.head_count}
+            onChange={e => set("head_count", parseInt(e.target.value) || 1)} />
+        </div>
 
-      <div className="field-row">
-        <span className="field-label">Ration</span>
-        <select
-          className="field-select"
-          value={local.ration_id}
-          onChange={e => set("ration_id", e.target.value)}
-        >
-          {rations.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
-        </select>
-      </div>
+        <div className="field-row">
+          <span className="field-label">Ration</span>
+          <select className="field-select" value={local.ration_id}
+            onChange={e => set("ration_id", e.target.value)}>
+            {rations.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+          </select>
+        </div>
 
-      <div className="toggle-row">
-        <span className="field-label toggle-label">Use DDG</span>
-        <button
-          className={`toggle${local.use_ddg ? " on" : ""}`}
-          onClick={() => set("use_ddg", !local.use_ddg)}
-        />
-        <span className="toggle-label" style={{ color: local.use_ddg ? "var(--accent)" : "var(--text-3)" }}>
-          {local.use_ddg ? "Yes" : "No"}
-        </span>
-      </div>
+        <div className="toggle-row">
+          <span className="field-label toggle-label">Use DDG</span>
+          <button className={`toggle${local.use_ddg ? " on" : ""}`}
+            onClick={() => set("use_ddg", !local.use_ddg)} />
+          <span className="toggle-label" style={{ color: local.use_ddg ? "var(--accent)" : "var(--text-3)" }}>
+            {local.use_ddg ? "Yes" : "No"}
+          </span>
+        </div>
 
-      <div className="total-lbs-row">
-        <span className="field-label">Total lbs</span>
-        <input
-          className="field-input" type="number" min="1" step="0.5"
-          value={totalLbs}
-          onChange={e => set("total_lbs_override", parseFloat(e.target.value) || calcLbs)}
-        />
+        <div className="total-lbs-row">
+          <span className="field-label">Total lbs</span>
+          <input className="field-input" type="number" min="1" step="0.5"
+            value={totalLbs}
+            onChange={e => set("total_lbs_override", parseFloat(e.target.value) || calcLbs)} />
+          {local.total_lbs_override !== null && local.total_lbs_override !== undefined && (
+            <button className="override-clear" onClick={() => set("total_lbs_override", null)}>reset</button>
+          )}
+        </div>
         {local.total_lbs_override !== null && local.total_lbs_override !== undefined && (
-          <button className="override-clear" onClick={() => set("total_lbs_override", null)}>
-            reset
+          <div className="calc-lbs">Calculated: {calcLbs} lbs · override active</div>
+        )}
+
+        {dirty && (
+          <button className="save-btn" onClick={handleSave} disabled={saving}>
+            {saving ? "Saving…" : "Save changes"}
           </button>
         )}
-      </div>
-      {local.total_lbs_override !== null && local.total_lbs_override !== undefined && (
-        <div className="calc-lbs">Calculated: {calcLbs} lbs · override active</div>
-      )}
+        {saved && <div className="saved-badge">✓ Saved</div>}
 
-      {dirty && (
-        <button className="save-btn" onClick={handleSave} disabled={saving}>
-          {saving ? "Saving…" : "Save changes"}
+        <button className="schedule-btn" onClick={() => setShowCal(true)}>
+          📅 Schedule rations{upcomingCount > 0 ? ` · ${upcomingCount} upcoming` : ""}
         </button>
+      </div>
+
+      {showCal && (
+        <CalendarModal
+          pen={pen}
+          rations={rations}
+          existingSchedule={schedule}
+          onSave={onSaveSchedule}
+          onClose={() => setShowCal(false)}
+        />
       )}
-      {saved && <div className="saved-badge">✓ Saved</div>}
-    </div>
+    </>
   );
 }
 
-function AdminView({ pens, rations, events, onSavePen }) {
+// ── ADMIN VIEW ────────────────────────────────────────────────────────────────
+
+function AdminView({ pens, rations, events, penSchedules, onSavePen, onSaveSchedule }) {
   const [tab, setTab] = useState("pens");
   const doneCount = events.filter(e => e.status === "done").length;
   const pendingCount = events.length - doneCount;
@@ -616,12 +799,8 @@ function AdminView({ pens, rations, events, onSavePen }) {
   return (
     <div className="content">
       <div className="nav" style={{ margin: "0 -16px 16px", borderTop: "1px solid var(--border)" }}>
-        {["pens", "log"].map(t => (
-          <button
-            key={t}
-            className={`nav-tab${tab === t ? " active" : ""}`}
-            onClick={() => setTab(t)}
-          >
+        {["pens","log"].map(t => (
+          <button key={t} className={`nav-tab${tab === t ? " active" : ""}`} onClick={() => setTab(t)}>
             {t === "pens" ? "Pen Setup" : "Today's Log"}
           </button>
         ))}
@@ -630,24 +809,19 @@ function AdminView({ pens, rations, events, onSavePen }) {
       {tab === "pens" && (
         <>
           <div className="stat-row">
-            <div className="stat-card">
-              <div className="stat-num">{events.length}</div>
-              <div className="stat-lbl">Total</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-num green">{doneCount}</div>
-              <div className="stat-lbl">Done</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-num amber">{pendingCount}</div>
-              <div className="stat-lbl">Pending</div>
-            </div>
+            <div className="stat-card"><div className="stat-num">{events.length}</div><div className="stat-lbl">Total</div></div>
+            <div className="stat-card"><div className="stat-num green">{doneCount}</div><div className="stat-lbl">Done</div></div>
+            <div className="stat-card"><div className="stat-num amber">{pendingCount}</div><div className="stat-lbl">Pending</div></div>
           </div>
-
           <div className="admin-section">
             <div className="admin-section-title">Pen Configuration</div>
             {pens.map(pen => (
-              <PenCard key={pen.id} pen={pen} rations={rations} onSave={onSavePen} />
+              <PenCard
+                key={pen.id} pen={pen} rations={rations}
+                schedule={penSchedules[pen.id] || []}
+                onSave={onSavePen}
+                onSaveSchedule={onSaveSchedule}
+              />
             ))}
           </div>
         </>
@@ -655,9 +829,7 @@ function AdminView({ pens, rations, events, onSavePen }) {
 
       {tab === "log" && (
         <div className="admin-section">
-          <div className="admin-section-title">
-            <span className="sync-dot" />Completed feedings today
-          </div>
+          <div className="admin-section-title"><span className="sync-dot" />Completed feedings today</div>
           <div className="pen-admin-card">
             {doneEvents.length === 0 ? (
               <div className="empty-log">No feedings confirmed yet</div>
@@ -689,10 +861,21 @@ export default function App() {
   const [rations, setRations] = useState([]);
   const [events, setEvents] = useState([]);
   const [feeders, setFeeders] = useState([]);
+  const [penSchedules, setPenSchedules] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  // Initial load
+  async function loadSchedules(penList) {
+    const schedules = {};
+    await Promise.all(penList.map(async pen => {
+      try {
+        const rows = await db.getPenSchedule(pen.id);
+        schedules[pen.id] = rows || [];
+      } catch (_) { schedules[pen.id] = []; }
+    }));
+    setPenSchedules(schedules);
+  }
+
   useEffect(() => {
     async function load() {
       try {
@@ -704,6 +887,7 @@ export default function App() {
         setRations(r || []);
         setEvents(e || []);
         setFeeders((f || []).map(x => x.name));
+        await loadSchedules(p || []);
       } catch (err) {
         setError(err.message);
       } finally {
@@ -713,7 +897,6 @@ export default function App() {
     load();
   }, []);
 
-  // Realtime: feed_events
   useEffect(() => {
     const unsub = subscribeRealtime("feed_events", () => {
       db.getTodayEvents().then(e => setEvents(e || []));
@@ -721,10 +904,9 @@ export default function App() {
     return unsub;
   }, []);
 
-  // Realtime: pens
   useEffect(() => {
     const unsub = subscribeRealtime("pens", () => {
-      db.getPens().then(p => setPens(p || []));
+      db.getPens().then(p => { setPens(p || []); loadSchedules(p || []); });
     });
     return unsub;
   }, []);
@@ -732,7 +914,6 @@ export default function App() {
   const confirmEvent = useCallback(async (eventId, feederName) => {
     try {
       await db.confirmEvent(eventId, feederName);
-      // Optimistic update
       setEvents(prev => prev.map(e =>
         e.id === eventId
           ? { ...e, status: "done", confirmed_by: feederName, confirmed_at: new Date().toISOString() }
@@ -750,6 +931,21 @@ export default function App() {
       setPens(prev => prev.map(p => p.id === penId ? { ...p, ...updates } : p));
     } catch (err) {
       setError("Failed to save pen. Try again.");
+      setTimeout(() => setError(null), 3000);
+    }
+  }, []);
+
+  const saveSchedule = useCallback(async (penId, rows) => {
+    try {
+      await db.upsertPenSchedule(rows);
+      setPenSchedules(prev => {
+        const existing = prev[penId] || [];
+        const newDates = new Set(rows.map(r => r.date));
+        const merged = existing.filter(r => !newDates.has(r.date)).concat(rows);
+        return { ...prev, [penId]: merged.sort((a,b) => a.date.localeCompare(b.date)) };
+      });
+    } catch (err) {
+      setError("Failed to save schedule. Try again.");
       setTimeout(() => setError(null), 3000);
     }
   }, []);
@@ -785,15 +981,9 @@ export default function App() {
         {error && <div className="error-bar">{error}</div>}
 
         {role === "feeder" ? (
-          <FeederView
-            pens={pens} rations={rations} events={events}
-            feeders={feeders} onConfirm={confirmEvent}
-          />
+          <FeederView pens={pens} rations={rations} events={events} feeders={feeders} onConfirm={confirmEvent} />
         ) : (
-          <AdminView
-            pens={pens} rations={rations} events={events}
-            onSavePen={savePen}
-          />
+          <AdminView pens={pens} rations={rations} events={events} penSchedules={penSchedules} onSavePen={savePen} onSaveSchedule={saveSchedule} />
         )}
       </div>
     </>
