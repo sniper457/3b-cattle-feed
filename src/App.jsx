@@ -348,12 +348,24 @@ const css = `
   .save-btn:disabled { opacity: 0.5; cursor: default; }
   .saved-badge { text-align: center; font-size: 11px; font-family: var(--mono); color: var(--accent); margin-top: 6px; }
 
+  /* AM/PM tabs */
+  .ampm-tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+  .ampm-tab {
+    flex: 1; padding: 7px; text-align: center;
+    font-size: 12px; font-weight: 500; font-family: var(--mono);
+    border-radius: 8px; cursor: pointer; border: 1.5px solid var(--border);
+    background: none; color: var(--text-3); transition: all 0.15s;
+  }
+  .ampm-tab.active.am { background: var(--fp-light); color: var(--fp); border-color: var(--fp-light); }
+  .ampm-tab.active.pm { background: var(--cp-light); color: var(--cp); border-color: var(--cp-light); }
+  .ampm-tab:not(.active):hover { background: var(--bg); }
+
   /* Schedule button */
   .schedule-btn {
     width: 100%; margin-top: 8px; padding: 8px;
-    background: none; color: var(--fp); border: 1px solid var(--fp-light);
+    background: var(--fp-light); color: var(--fp); border: 1px solid var(--fp-light);
     border-radius: 8px; font-family: var(--mono); font-size: 12px;
-    cursor: pointer; transition: all 0.15s; background: var(--fp-light);
+    cursor: pointer; transition: all 0.15s;
   }
   .schedule-btn:hover { opacity: 0.8; }
 
@@ -447,15 +459,16 @@ const css = `
 
 // ── CALENDAR MODAL ────────────────────────────────────────────────────────────
 
-function CalendarModal({ pen, rations, existingSchedule, onSave, onClose }) {
+function CalendarModal({ pen, rations, existingSchedule, timeOfDay, onSave, onClose }) {
   const today = new Date();
   today.setHours(0,0,0,0);
   const todayStr = toLocalDateStr(today);
 
+  const filteredRations = rations.filter(r => r.time_of_day === timeOfDay);
   const [viewYear, setViewYear] = useState(today.getFullYear());
   const [viewMonth, setViewMonth] = useState(today.getMonth());
   const [selectedDates, setSelectedDates] = useState(new Set());
-  const [rationId, setRationId] = useState(pen.ration_id);
+  const [rationId, setRationId] = useState(filteredRations[0]?.id || pen.ration_id);
   const [useDdg, setUseDdg] = useState(pen.use_ddg);
   const [saving, setSaving] = useState(false);
 
@@ -508,7 +521,7 @@ function CalendarModal({ pen, rations, existingSchedule, onSave, onClose }) {
     <div className="modal-backdrop" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="modal">
         <div className="modal-handle" />
-        <div className="modal-title">Schedule rations — {pen.name}</div>
+        <div className="modal-title">Schedule {timeOfDay} rations 2014 {pen.name}</div>
         <div className="modal-sub">Tap days to apply a ration. Dots = already scheduled.</div>
 
         <div className="cal-nav">
@@ -549,7 +562,7 @@ function CalendarModal({ pen, rations, existingSchedule, onSave, onClose }) {
         <div className="cal-ration-row">
           <span className="cal-ration-label">Ration</span>
           <select className="field-select" value={rationId} onChange={e => setRationId(e.target.value)}>
-            {rations.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+            {filteredRations.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
           </select>
         </div>
 
@@ -693,8 +706,19 @@ function PenCard({ pen, rations, schedule, onSave, onSaveSchedule }) {
   const [local, setLocal] = useState({ ...pen });
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [showCal, setShowCal] = useState(false);
+  const [showCal, setShowCal] = useState(null); // null | "AM" | "PM"
   const dirty = JSON.stringify(local) !== JSON.stringify(pen);
+
+  const amRations = rations.filter(r => r.time_of_day === "AM");
+  const pmRations = rations.filter(r => r.time_of_day === "PM");
+
+  // Default ration dropdowns per tab
+  const [amRationId, setAmRationId] = useState(
+    amRations.find(r => r.id === pen.ration_id)?.id || amRations[0]?.id || ""
+  );
+  const [pmRationId, setPmRationId] = useState(
+    pmRations.find(r => r.id === pen.ration_id)?.id || pmRations[0]?.id || ""
+  );
 
   const ration = rations.find(r => r.id === local.ration_id);
   const calcLbs = ration ? Math.round(local.head_count * ration.lbs_per_head * 10) / 10 : 0;
@@ -715,7 +739,8 @@ function PenCard({ pen, rations, schedule, onSave, onSaveSchedule }) {
     setTimeout(() => setSaved(false), 2000);
   }
 
-  const upcomingCount = (schedule || []).length;
+  const amUpcoming = (schedule || []).filter(s => rations.find(r => r.id === s.ration_id)?.time_of_day === "AM").length;
+  const pmUpcoming = (schedule || []).filter(s => rations.find(r => r.id === s.ration_id)?.time_of_day === "PM").length;
 
   return (
     <>
@@ -736,7 +761,12 @@ function PenCard({ pen, rations, schedule, onSave, onSaveSchedule }) {
           <span className="field-label">Ration</span>
           <select className="field-select" value={local.ration_id}
             onChange={e => set("ration_id", e.target.value)}>
-            {rations.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+            <optgroup label="AM">
+              {amRations.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+            </optgroup>
+            <optgroup label="PM">
+              {pmRations.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+            </optgroup>
           </select>
         </div>
 
@@ -769,9 +799,19 @@ function PenCard({ pen, rations, schedule, onSave, onSaveSchedule }) {
         )}
         {saved && <div className="saved-badge">✓ Saved</div>}
 
-        <button className="schedule-btn" onClick={() => setShowCal(true)}>
-          📅 Schedule rations{upcomingCount > 0 ? ` · ${upcomingCount} upcoming` : ""}
-        </button>
+        <div style={{ marginTop: 10 }}>
+          <div className="admin-section-title" style={{ marginBottom: 6 }}>Schedule rations</div>
+          <div className="ampm-tabs">
+            <button className={`ampm-tab am${showCal === "AM" ? " active" : ""}`}
+              onClick={() => setShowCal(c => c === "AM" ? null : "AM")}>
+              📅 AM{amUpcoming > 0 ? ` · ${amUpcoming}` : ""}
+            </button>
+            <button className={`ampm-tab pm${showCal === "PM" ? " active" : ""}`}
+              onClick={() => setShowCal(c => c === "PM" ? null : "PM")}>
+              📅 PM{pmUpcoming > 0 ? ` · ${pmUpcoming}` : ""}
+            </button>
+          </div>
+        </div>
       </div>
 
       {showCal && (
@@ -779,8 +819,9 @@ function PenCard({ pen, rations, schedule, onSave, onSaveSchedule }) {
           pen={pen}
           rations={rations}
           existingSchedule={schedule}
+          timeOfDay={showCal}
           onSave={onSaveSchedule}
-          onClose={() => setShowCal(false)}
+          onClose={() => setShowCal(null)}
         />
       )}
     </>
