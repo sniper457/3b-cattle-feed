@@ -481,7 +481,7 @@ function CalendarModal({ pen, rations, existingSchedule, timeOfDay, onSave, onCl
   const firstDow = new Date(viewYear, viewMonth, 1).getDay();
 
   function toggleDate(dateStr) {
-    const d = new Date(dateStr);
+    const d = new Date(dateStr + "T00:00:00");
     if (d < today) return;
     setSelectedDates(prev => {
       const next = new Set(prev);
