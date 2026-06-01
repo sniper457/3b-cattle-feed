@@ -281,6 +281,111 @@ const css = `
   .ration-table tr:last-child td { border-bottom: none; font-weight: 500; color: var(--accent-text); }
   .ddg-note { font-size: 10px; font-family: var(--mono); color: var(--text-3); margin-top: 6px; }
 
+  /* ── MIXER MODE ── */
+  .mixer { margin-top: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .mixer-step { padding: 16px; }
+  .mixer-progress-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .mixer-step-label { font-size: 10px; font-family: var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); }
+  .mixer-step-count { font-size: 10px; font-family: var(--mono); color: var(--text-3); }
+  .mixer-track { height: 2px; background: var(--border); border-radius: 2px; margin-bottom: 16px; }
+  .mixer-fill { height: 2px; background: var(--accent); border-radius: 2px; transition: width 0.3s ease; }
+  .mixer-ingredient-name { font-size: 22px; font-weight: 600; letter-spacing: -0.5px; color: var(--text); margin-bottom: 4px; line-height: 1.2; }
+  .mixer-ingredient-lbs { font-size: 36px; font-weight: 600; font-family: var(--mono); color: var(--accent); letter-spacing: -1px; line-height: 1; }
+  .mixer-ingredient-unit { font-size: 14px; font-weight: 400; color: var(--text-3); margin-left: 4px; }
+  .mixer-cumulative { margin-top: 12px; padding: 10px 12px; background: var(--surface); border-radius: 8px; }
+  .mixer-cumulative-label { font-size: 11px; font-family: var(--mono); color: var(--text-3); }
+  .mixer-cumulative-val { font-size: 13px; font-family: var(--mono); font-weight: 500; color: var(--text); margin-top: 2px; }
+  .mixer-cumulative-bar { height: 3px; background: var(--border); border-radius: 2px; margin-top: 8px; }
+  .mixer-cumulative-fill { height: 3px; background: var(--fp); border-radius: 2px; transition: width 0.4s ease; }
+  .mixer-done-screen { padding: 24px 16px; text-align: center; }
+  .mixer-done-icon { font-size: 40px; margin-bottom: 12px; }
+  .mixer-done-title { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+  .mixer-done-sub { font-size: 12px; font-family: var(--mono); color: var(--text-3); margin-bottom: 16px; }
+  .mixer-nav { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border-light); }
+  .mixer-btn { flex: 1; padding: 12px; border-radius: 8px; border: none; font-family: var(--mono); font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.15s; }
+  .mixer-btn.start { background: var(--accent); color: white; }
+  .mixer-btn.next { background: var(--fp-light); color: var(--fp); }
+  .mixer-btn.finish { background: var(--accent); color: white; }
+  .mixer-btn.back { background: var(--bg); color: var(--text-3); border: 1px solid var(--border); flex: 0 0 52px; }
+  .mixer-btn:hover { opacity: 0.85; }
+  .start-btn { width: 100%; margin-top: 12px; padding: 11px; background: var(--accent-light); color: var(--accent-text); border: 1px solid var(--accent-light); border-radius: 8px; font-family: var(--mono); font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.15s; text-align: center; }
+  .start-btn:hover { background: var(--accent); color: white; }
+
+  /* ── MIXER MODE ── */
+  .mixer {
+    margin-top: 12px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+  }
+  .mixer-step {
+    padding: 16px;
+  }
+  .mixer-progress-row {
+    display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;
+  }
+  .mixer-step-label {
+    font-size: 10px; font-family: var(--mono); letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--text-3);
+  }
+  .mixer-step-count {
+    font-size: 10px; font-family: var(--mono); color: var(--text-3);
+  }
+  .mixer-track { height: 2px; background: var(--border); border-radius: 2px; margin-bottom: 16px; }
+  .mixer-fill { height: 2px; background: var(--accent); border-radius: 2px; transition: width 0.3s ease; }
+
+  .mixer-ingredient-name {
+    font-size: 22px; font-weight: 600; letter-spacing: -0.5px;
+    color: var(--text); margin-bottom: 4px; line-height: 1.2;
+  }
+  .mixer-ingredient-lbs {
+    font-size: 36px; font-weight: 600; font-family: var(--mono);
+    color: var(--accent); letter-spacing: -1px; line-height: 1;
+  }
+  .mixer-ingredient-unit {
+    font-size: 14px; font-weight: 400; color: var(--text-3); margin-left: 4px;
+  }
+  .mixer-cumulative {
+    margin-top: 12px; padding: 10px 12px;
+    background: var(--surface); border-radius: 8px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .mixer-cumulative-label { font-size: 11px; font-family: var(--mono); color: var(--text-3); }
+  .mixer-cumulative-val { font-size: 13px; font-family: var(--mono); font-weight: 500; color: var(--text); }
+  .mixer-cumulative-bar {
+    height: 3px; background: var(--border); border-radius: 2px; margin-top: 8px;
+  }
+  .mixer-cumulative-fill {
+    height: 3px; background: var(--fp); border-radius: 2px; transition: width 0.4s ease;
+  }
+
+  .mixer-done-screen {
+    padding: 24px 16px; text-align: center;
+  }
+  .mixer-done-icon { font-size: 40px; margin-bottom: 12px; }
+  .mixer-done-title { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+  .mixer-done-sub { font-size: 12px; font-family: var(--mono); color: var(--text-3); margin-bottom: 16px; }
+
+  .mixer-nav { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border-light); }
+  .mixer-btn {
+    flex: 1; padding: 12px; border-radius: 8px; border: none;
+    font-family: var(--mono); font-size: 13px; font-weight: 500;
+    cursor: pointer; transition: all 0.15s;
+  }
+  .mixer-btn.start { background: var(--accent); color: white; }
+  .mixer-btn.next { background: var(--fp-light); color: var(--fp); }
+  .mixer-btn.finish { background: var(--accent); color: white; }
+  .mixer-btn.back { background: var(--bg); color: var(--text-3); border: 1px solid var(--border); flex: 0 0 52px; }
+  .mixer-btn:hover { opacity: 0.85; }
+  .mixer-btn:disabled { opacity: 0.4; cursor: default; }
+
+  .start-btn {
+    width: 100%; margin-top: 12px; padding: 11px;
+    background: var(--accent-light); color: var(--accent-text);
+    border: 1px solid var(--accent-light); border-radius: 8px;
+    font-family: var(--mono); font-size: 12px; font-weight: 500;
+    cursor: pointer; transition: all 0.15s; text-align: center;
+  }
+  .start-btn:hover { background: var(--accent); color: white; }
+
   /* Admin */
   .admin-section { margin-bottom: 24px; }
   .admin-section-title {
@@ -481,8 +586,7 @@ function CalendarModal({ pen, rations, existingSchedule, timeOfDay, onSave, onCl
   const firstDow = new Date(viewYear, viewMonth, 1).getDay();
 
   function toggleDate(dateStr) {
-    const d = new Date(dateStr + "T00:00:00");
-    if (d < today) return;
+    if (dateStr < todayStr) return;
     setSelectedDates(prev => {
       const next = new Set(prev);
       next.has(dateStr) ? next.delete(dateStr) : next.add(dateStr);
@@ -613,17 +717,119 @@ function RationDetail({ ration, useDdg, totalLbs }) {
   );
 }
 
+function MixerMode({ ingredients, totalLbs, onFinish, onCancel }) {
+  const [step, setStep] = useState(0); // 0 = not started, 1..n = ingredient, n+1 = done
+
+  const started = step > 0;
+  const finished = step > ingredients.length;
+  const current = started && !finished ? ingredients[step - 1] : null;
+
+  const cumulativeLbs = ingredients
+    .slice(0, step)
+    .reduce((sum, i) => sum + i.lbs, 0);
+  const cumulativePct = Math.round((cumulativeLbs / totalLbs) * 100);
+
+  if (!started) {
+    return (
+      <div className="mixer">
+        <div className="mixer-step">
+          <div className="mixer-progress-row">
+            <span className="mixer-step-label">Ready to mix</span>
+            <span className="mixer-step-count">{ingredients.length} ingredients · {totalLbs} lbs total</span>
+          </div>
+          <div style={{ fontSize: 13, color: "var(--text-2)", fontFamily: "var(--mono)", lineHeight: 1.6 }}>
+            {ingredients.map((i, idx) => (
+              <div key={i.name} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", borderBottom: "1px solid var(--border-light)" }}>
+                <span style={{ color: "var(--text-3)" }}>{idx + 1}. {i.name}</span>
+                <span>{i.lbs} lbs</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="mixer-nav">
+          <button className="mixer-btn back" onClick={onCancel}>✕</button>
+          <button className="mixer-btn start" onClick={() => setStep(1)}>Start mixing →</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (finished) {
+    return (
+      <div className="mixer">
+        <div className="mixer-done-screen">
+          <div className="mixer-done-icon">✓</div>
+          <div className="mixer-done-title">Mix complete</div>
+          <div className="mixer-done-sub">{totalLbs} lbs total · {ingredients.length} ingredients</div>
+        </div>
+        <div className="mixer-nav">
+          <button className="mixer-btn back" onClick={() => setStep(0)}>↩</button>
+          <button className="mixer-btn finish" onClick={onFinish}>Mark as done</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mixer">
+      <div className="mixer-step">
+        <div className="mixer-progress-row">
+          <span className="mixer-step-label">Step {step} of {ingredients.length}</span>
+          <span className="mixer-step-count">{ingredients.length - step} remaining</span>
+        </div>
+        <div className="mixer-track">
+          <div className="mixer-fill" style={{ width: `${Math.round((step - 1) / ingredients.length * 100)}%` }} />
+        </div>
+
+        <div className="mixer-ingredient-name">{current.name}</div>
+        <div style={{ marginTop: 8 }}>
+          <span className="mixer-ingredient-lbs">{current.lbs}</span>
+          <span className="mixer-ingredient-unit">lbs</span>
+          <span style={{ marginLeft: 12, fontSize: 12, fontFamily: "var(--mono)", color: "var(--text-3)" }}>
+            ({Math.round(current.pct * 100)}%)
+          </span>
+        </div>
+
+        <div className="mixer-cumulative">
+          <div>
+            <div className="mixer-cumulative-label">Running total after this step</div>
+            <div className="mixer-cumulative-val">
+              {Math.round((cumulativeLbs + current.lbs) * 10) / 10} lbs
+              <span style={{ color: "var(--text-3)", marginLeft: 8 }}>
+                of {totalLbs} lbs
+              </span>
+            </div>
+            <div className="mixer-cumulative-bar">
+              <div className="mixer-cumulative-fill"
+                style={{ width: `${Math.round((cumulativeLbs + current.lbs) / totalLbs * 100)}%` }} />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="mixer-nav">
+        <button className="mixer-btn back" onClick={() => setStep(s => Math.max(1, s - 1))}>←</button>
+        <button className="mixer-btn next" onClick={() => setStep(s => s + 1)}>
+          {step === ingredients.length ? "Finish →" : `Next →`}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function FeedCard({ pen, ration, event, onConfirm, feederName }) {
-  const [expanded, setExpanded] = useState(false);
+  const [mode, setMode] = useState("card"); // "card" | "overview" | "mixing"
   const [confirming, setConfirming] = useState(false);
   const totalLbs = getTotalLbs(pen, ration);
   const isDone = event.status === "done";
+  const ingredients = getIngredients(ration, pen.use_ddg, totalLbs);
 
   async function handleConfirm() {
     if (isDone || confirming) return;
     setConfirming(true);
     await onConfirm(event.id, feederName);
     setConfirming(false);
+    setMode("card");
   }
 
   return (
@@ -638,10 +844,19 @@ function FeedCard({ pen, ration, event, onConfirm, feederName }) {
           <div className={`status-badge ${isDone ? "done" : "pending"}`}>
             {isDone ? `✓ ${event.confirmed_by} · ${fmtTime(event.confirmed_at)}` : "Pending"}
           </div>
-          <button className="expand-btn" onClick={() => setExpanded(e => !e)}>
-            {expanded ? "▴ Hide ration" : "▾ Show ration"}
-          </button>
-          {expanded && <RationDetail ration={ration} useDdg={pen.use_ddg} totalLbs={totalLbs} />}
+          {!isDone && mode === "card" && (
+            <button className="start-btn" onClick={() => setMode("mixing")}>
+              ▶ Start mixing
+            </button>
+          )}
+          {!isDone && mode === "mixing" && (
+            <MixerMode
+              ingredients={ingredients}
+              totalLbs={totalLbs}
+              onFinish={handleConfirm}
+              onCancel={() => setMode("card")}
+            />
+          )}
         </div>
         <button
           className={`check-btn${isDone ? " done" : ""}`}
