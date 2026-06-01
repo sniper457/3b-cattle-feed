@@ -725,7 +725,7 @@ function MixerMode({ ingredients, totalLbs, onFinish, onCancel }) {
   const current = started && !finished ? ingredients[step - 1] : null;
 
   const cumulativeLbs = ingredients
-    .slice(0, step)
+    .slice(0, step - 1)
     .reduce((sum, i) => sum + i.lbs, 0);
   const cumulativePct = Math.round((cumulativeLbs / totalLbs) * 100);
 
