@@ -493,6 +493,21 @@ const css = `
   }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
 
+  /* Offline banner */
+  .offline-bar {
+    background: #7A4A00; color: #FFF4E0;
+    padding: 8px 16px; font-size: 11px; font-family: var(--mono);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .offline-dot {
+    width: 6px; height: 6px; border-radius: 50%; background: #FFB84D;
+    display: inline-block; margin-right: 6px;
+  }
+  .sync-pending {
+    background: rgba(255,255,255,0.15); border-radius: 10px;
+    padding: 2px 8px; font-size: 10px;
+  }
+
   /* ── CALENDAR MODAL ── */
   .modal-backdrop {
     position: fixed; inset: 0; background: rgba(0,0,0,0.5);
@@ -1133,6 +1148,47 @@ function AdminView({ pens, rations, events, penSchedules, onSavePen, onSaveSched
   );
 }
 
+// ── OFFLINE QUEUE ─────────────────────────────────────────────────────────────
+
+const QUEUE_KEY = "3b_offline_queue";
+
+function loadQueue() {
+  try { return JSON.parse(localStorage.getItem(QUEUE_KEY) || "[]"); }
+  catch { return []; }
+}
+
+function saveQueue(queue) {
+  try { localStorage.setItem(QUEUE_KEY, JSON.stringify(queue)); }
+  catch {}
+}
+
+function addToQueue(item) {
+  const queue = loadQueue();
+  queue.push(item);
+  saveQueue(queue);
+}
+
+function removeFromQueue(eventId) {
+  const queue = loadQueue().filter(q => q.eventId !== eventId);
+  saveQueue(queue);
+}
+
+async function flushQueue(setEvents) {
+  const queue = loadQueue();
+  if (queue.length === 0) return;
+  for (const item of queue) {
+    try {
+      await db.confirmEvent(item.eventId, item.confirmedBy);
+      removeFromQueue(item.eventId);
+      setEvents(prev => prev.map(e =>
+        e.id === item.eventId
+          ? { ...e, status: "done", confirmed_by: item.confirmedBy, confirmed_at: item.confirmedAt }
+          : e
+      ));
+    } catch {}
+  }
+}
+
 // ── ROOT APP ──────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -1144,6 +1200,8 @@ export default function App() {
   const [penSchedules, setPenSchedules] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [offlinePending, setOfflinePending] = useState(() => loadQueue().length);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
 
   async function loadSchedules(penList) {
     const schedules = {};
@@ -1177,6 +1235,25 @@ export default function App() {
     load();
   }, []);
 
+  // Online/offline detection + auto-sync queue on reconnect
+  useEffect(() => {
+    function handleOnline() {
+      setIsOnline(true);
+      flushQueue(setEvents).then(() => setOfflinePending(loadQueue().length));
+    }
+    function handleOffline() { setIsOnline(false); }
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    // Flush any queued items from previous session on load
+    if (navigator.onLine) {
+      flushQueue(setEvents).then(() => setOfflinePending(loadQueue().length));
+    }
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
+
   useEffect(() => {
     const unsub = subscribeRealtime("feed_events", () => {
       db.getTodayEvents().then(e => setEvents(e || []));
@@ -1192,16 +1269,26 @@ export default function App() {
   }, []);
 
   const confirmEvent = useCallback(async (eventId, feederName) => {
-    try {
-      await db.confirmEvent(eventId, feederName);
-      setEvents(prev => prev.map(e =>
-        e.id === eventId
-          ? { ...e, status: "done", confirmed_by: feederName, confirmed_at: new Date().toISOString() }
-          : e
-      ));
-    } catch (err) {
-      setError("Failed to confirm feeding. Try again.");
-      setTimeout(() => setError(null), 3000);
+    const confirmedAt = new Date().toISOString();
+    // Optimistic update immediately — works online or offline
+    setEvents(prev => prev.map(e =>
+      e.id === eventId
+        ? { ...e, status: "done", confirmed_by: feederName, confirmed_at: confirmedAt }
+        : e
+    ));
+    if (navigator.onLine) {
+      try {
+        await db.confirmEvent(eventId, feederName);
+        removeFromQueue(eventId);
+      } catch {
+        // Online but request failed — queue it
+        addToQueue({ eventId, confirmedBy: feederName, confirmedAt });
+        setOfflinePending(prev => prev + 1);
+      }
+    } else {
+      // Offline — queue for later
+      addToQueue({ eventId, confirmedBy: feederName, confirmedAt });
+      setOfflinePending(prev => prev + 1);
     }
   }, []);
 
@@ -1258,6 +1345,19 @@ export default function App() {
           </button>
         </div>
 
+        {!isOnline && (
+          <div className="offline-bar">
+            <span><span className="offline-dot" />No signal — changes saved locally</span>
+            {offlinePending > 0 && (
+              <span className="sync-pending">{offlinePending} pending sync</span>
+            )}
+          </div>
+        )}
+        {isOnline && offlinePending > 0 && (
+          <div className="offline-bar" style={{ background: "#2D5A27", color: "#EAF2E8" }}>
+            <span>⟳ Syncing {offlinePending} offline confirmation{offlinePending > 1 ? "s" : ""}…</span>
+          </div>
+        )}
         {error && <div className="error-bar">{error}</div>}
 
         {role === "feeder" ? (
