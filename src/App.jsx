@@ -175,12 +175,12 @@ const css = `
 
   .header {
     background: var(--text); color: var(--bg);
-    padding: 16px 20px 14px;
+    padding: 12px 20px 10px;
     display: flex; align-items: center; justify-content: space-between;
     position: sticky; top: 0; z-index: 100;
   }
-  .header-left { display: flex; flex-direction: column; gap: 2px; }
-  .header-title { font-size: 16px; font-weight: 600; letter-spacing: -0.3px; }
+  .header-left { display: flex; flex-direction: column; gap: 3px; }
+  .header-logo { height: 28px; width: auto; display: block; }
   .header-date { font-size: 11px; font-family: var(--mono); color: #9C9288; }
   .role-badge {
     font-family: var(--mono); font-size: 10px;
@@ -1337,7 +1337,7 @@ export default function App() {
       <div className="app">
         <div className="header">
           <div className="header-left">
-            <div className="header-title">3B Cattle · Feed Schedule</div>
+            <img src="/logo-white.png" alt="Triple B Farms" className="header-logo" />
             <div className="header-date">{todayStr()}</div>
           </div>
           <button className="role-badge" onClick={() => setRole(r => r === "feeder" ? "admin" : "feeder")}>
