@@ -62,6 +62,11 @@ const db = {
     sbFetch(`/pen_schedule?pen_id=eq.${penId}&date=in.(${dates.join(",")})`, {
       method: "DELETE",
     }),
+  updateRation: (id, updates) =>
+    sbFetch(`/rations?id=eq.${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(updates),
+    }),
 };
 
 // ── REALTIME ──────────────────────────────────────────────────────────────────
@@ -281,6 +286,70 @@ const css = `
   .ration-table tr:last-child td { border-bottom: none; font-weight: 500; color: var(--accent-text); }
   .ddg-note { font-size: 10px; font-family: var(--mono); color: var(--text-3); margin-top: 6px; }
 
+  /* ── RATION EDITOR ── */
+  .ration-editor-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; margin-bottom: 10px; overflow: hidden;
+  }
+  .ration-editor-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 14px; cursor: pointer; user-select: none;
+  }
+  .ration-editor-header:hover { background: var(--bg); }
+  .ration-editor-title { font-size: 14px; font-weight: 600; }
+  .ration-editor-meta { font-size: 11px; font-family: var(--mono); color: var(--text-3); margin-top: 2px; }
+  .ration-editor-chevron { font-size: 12px; color: var(--text-3); transition: transform 0.2s; }
+  .ration-editor-chevron.open { transform: rotate(180deg); }
+  .ration-editor-body { padding: 0 14px 14px; border-top: 1px solid var(--border-light); }
+
+  .ration-field-row {
+    display: grid; grid-template-columns: 1fr 72px 72px 28px;
+    gap: 6px; align-items: center; padding: 6px 0;
+    border-bottom: 1px solid var(--border-light);
+    font-size: 12px; font-family: var(--mono);
+  }
+  .ration-field-row:last-of-type { border-bottom: none; }
+  .ration-field-row.header { color: var(--text-3); font-size: 10px; letter-spacing: 0.05em; text-transform: uppercase; padding-top: 10px; }
+  .ration-ing-name { color: var(--text); font-size: 12px; }
+  .ration-ing-input {
+    width: 100%; font-family: var(--mono); font-size: 12px;
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 5px 7px; background: var(--bg); color: var(--text);
+    outline: none; text-align: right;
+  }
+  .ration-ing-input:focus { border-color: var(--accent); }
+  .ration-remove-btn {
+    background: none; border: none; cursor: pointer;
+    color: var(--text-3); font-size: 14px; padding: 0;
+    line-height: 1; transition: color 0.15s;
+  }
+  .ration-remove-btn:hover { color: var(--danger); }
+  .ration-add-btn {
+    margin-top: 10px; width: 100%; padding: 7px;
+    background: none; border: 1px dashed var(--border);
+    border-radius: 7px; font-family: var(--mono); font-size: 11px;
+    color: var(--text-3); cursor: pointer; transition: all 0.15s;
+  }
+  .ration-add-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-light); }
+  .ration-lbs-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 0 4px; border-top: 1px solid var(--border-light); margin-top: 6px;
+  }
+  .ration-lbs-label { font-size: 11px; font-family: var(--mono); color: var(--text-3); flex: 1; }
+  .pct-warning { font-size: 10px; font-family: var(--mono); margin-top: 4px; }
+  .pct-warning.ok { color: var(--accent); }
+  .pct-warning.warn { color: var(--warn); }
+  .input-mode-toggle {
+    display: flex; gap: 4px; margin-bottom: 10px; margin-top: 4px;
+  }
+  .input-mode-btn {
+    flex: 1; padding: 5px 8px; font-size: 10px; font-family: var(--mono);
+    border-radius: 6px; border: 1px solid var(--border);
+    background: none; color: var(--text-3); cursor: pointer; transition: all 0.15s;
+    letter-spacing: 0.04em;
+  }
+  .input-mode-btn.active { background: var(--fp-light); color: var(--fp); border-color: var(--fp-light); }
+
   /* ── MIXER MODE ── */
   .mixer { margin-top: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
   .mixer-step { padding: 16px; }
@@ -310,6 +379,60 @@ const css = `
   .mixer-btn:hover { opacity: 0.85; }
   .start-btn { width: 100%; margin-top: 12px; padding: 11px; background: var(--accent-light); color: var(--accent-text); border: 1px solid var(--accent-light); border-radius: 8px; font-family: var(--mono); font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.15s; text-align: center; }
   .start-btn:hover { background: var(--accent); color: white; }
+
+  /* ── RATION EDITOR ── */
+  .ration-editor-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; margin-bottom: 10px; overflow: hidden;
+  }
+  .ration-editor-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 14px; cursor: pointer; user-select: none;
+  }
+  .ration-editor-header:hover { background: var(--bg); }
+  .ration-editor-title { font-size: 14px; font-weight: 600; }
+  .ration-editor-meta { font-size: 11px; font-family: var(--mono); color: var(--text-3); margin-top: 2px; }
+  .ration-editor-chevron { font-size: 12px; color: var(--text-3); transition: transform 0.2s; }
+  .ration-editor-chevron.open { transform: rotate(180deg); }
+  .ration-editor-body { padding: 0 14px 14px; border-top: 1px solid var(--border-light); }
+
+  .ration-field-row {
+    display: grid; grid-template-columns: 1fr 80px 80px 28px;
+    gap: 6px; align-items: center; padding: 6px 0;
+    border-bottom: 1px solid var(--border-light);
+    font-size: 12px; font-family: var(--mono);
+  }
+  .ration-field-row:last-of-type { border-bottom: none; }
+  .ration-field-row.header { color: var(--text-3); font-size: 10px; letter-spacing: 0.05em; text-transform: uppercase; padding-top: 10px; }
+  .ration-ing-name { color: var(--text); font-size: 12px; }
+  .ration-ing-input {
+    width: 100%; font-family: var(--mono); font-size: 12px;
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 5px 7px; background: var(--bg); color: var(--text);
+    outline: none; text-align: right;
+  }
+  .ration-ing-input:focus { border-color: var(--accent); }
+  .ration-remove-btn {
+    background: none; border: none; cursor: pointer;
+    color: var(--text-3); font-size: 14px; padding: 0;
+    line-height: 1; transition: color 0.15s;
+  }
+  .ration-remove-btn:hover { color: var(--danger); }
+  .ration-add-btn {
+    margin-top: 10px; width: 100%; padding: 7px;
+    background: none; border: 1px dashed var(--border);
+    border-radius: 7px; font-family: var(--mono); font-size: 11px;
+    color: var(--text-3); cursor: pointer; transition: all 0.15s;
+  }
+  .ration-add-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-light); }
+  .ration-lbs-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 0 4px; border-top: 1px solid var(--border-light); margin-top: 6px;
+  }
+  .ration-lbs-label { font-size: 11px; font-family: var(--mono); color: var(--text-3); flex: 1; }
+  .pct-warning { font-size: 10px; font-family: var(--mono); margin-top: 4px; }
+  .pct-warning.ok { color: var(--accent); }
+  .pct-warning.warn { color: var(--warn); }
 
   /* ── MIXER MODE ── */
   .mixer {
@@ -1084,7 +1207,188 @@ function PenCard({ pen, rations, schedule, onSave, onSaveSchedule }) {
 
 // ── ADMIN VIEW ────────────────────────────────────────────────────────────────
 
-function AdminView({ pens, rations, events, penSchedules, onSavePen, onSaveSchedule }) {
+
+function RationEditorCard({ ration, variant, onSave, onReset }) {
+  const [open, setOpen] = useState(false);
+  const [ingredients, setIngredients] = useState(
+    (variant === "ddg" ? ration.ingredients : ration.ingredients_no_ddg).map(i => ({ ...i }))
+  );
+  const [lbsPerHead, setLbsPerHead] = useState(ration.lbs_per_head);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [inputMode, setInputMode] = useState("pct"); // "pct" | "lbs"
+
+  const baseIngredients = variant === "ddg" ? ration.base_ingredients : ration.base_ingredients_no_ddg;
+  const baseLbs = ration.base_lbs_per_head;
+  const hasBase = !!baseIngredients;
+  const isModified = hasBase && (
+    JSON.stringify(ingredients) !== JSON.stringify(baseIngredients) ||
+    parseFloat(lbsPerHead) !== baseLbs
+  );
+
+  const totalPct = Math.round(ingredients.reduce((s, i) => s + (parseFloat(i.pct) || 0), 0) * 100) / 100;
+  const pctOk = Math.abs(totalPct - 1) < 0.005;
+
+  function updateIng(idx, field, val) {
+    setIngredients(prev => prev.map((i, n) => n === idx ? { ...i, [field]: field === "pct" ? parseFloat(val) || 0 : val } : i));
+    setSaved(false);
+  }
+
+  function removeIng(idx) {
+    setIngredients(prev => prev.filter((_, n) => n !== idx));
+    setSaved(false);
+  }
+
+  function addIng() {
+    setIngredients(prev => [...prev, { name: "New ingredient", pct: 0 }]);
+    setSaved(false);
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    const field = variant === "ddg" ? "ingredients" : "ingredients_no_ddg";
+    await onSave(ration.id, {
+      [field]: ingredients,
+      lbs_per_head: parseFloat(lbsPerHead) || ration.lbs_per_head,
+    });
+    setSaving(false);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  }
+
+  async function handleReset() {
+    if (!confirmReset) { setConfirmReset(true); return; }
+    setResetting(true);
+    const field = variant === "ddg" ? "ingredients" : "ingredients_no_ddg";
+    await onSave(ration.id, {
+      [field]: baseIngredients,
+      lbs_per_head: baseLbs,
+    });
+    setIngredients(baseIngredients.map(i => ({ ...i })));
+    setLbsPerHead(baseLbs);
+    setResetting(false);
+    setConfirmReset(false);
+    setSaved(false);
+  }
+
+  const dirty = JSON.stringify(ingredients) !== JSON.stringify(
+    (variant === "ddg" ? ration.ingredients : ration.ingredients_no_ddg)
+  ) || parseFloat(lbsPerHead) !== ration.lbs_per_head;
+
+  return (
+    <div className="ration-editor-card">
+      <div className="ration-editor-header" onClick={() => { setOpen(o => !o); setConfirmReset(false); }}>
+        <div>
+          <div className="ration-editor-title">
+            {ration.name} {variant === "no-ddg" ? "· No DDG" : ""}
+            {isModified && <span style={{ marginLeft: 8, fontSize: 10, fontFamily: "var(--mono)", color: "var(--warn)", background: "var(--warn-light)", padding: "2px 6px", borderRadius: 4 }}>modified</span>}
+          </div>
+          <div className="ration-editor-meta">{lbsPerHead} lbs/head · {ingredients.length} ingredients</div>
+        </div>
+        <span className={`ration-editor-chevron${open ? " open" : ""}`}>▼</span>
+      </div>
+
+      {open && (
+        <div className="ration-editor-body">
+          <div className="input-mode-toggle">
+            <button className={`input-mode-btn${inputMode === "pct" ? " active" : ""}`} onClick={() => setInputMode("pct")}>% Percentage</button>
+            <button className={`input-mode-btn${inputMode === "lbs" ? " active" : ""}`} onClick={() => setInputMode("lbs")}>lbs Direct</button>
+          </div>
+
+          <div className="ration-field-row header">
+            <span>Ingredient</span>
+            <span style={{textAlign:"right"}}>{inputMode === "pct" ? "%" : "lbs"}</span>
+            <span style={{textAlign:"right"}}>{inputMode === "pct" ? "lbs" : "%"}</span>
+            <span></span>
+          </div>
+
+          {ingredients.map((ing, idx) => {
+            const lbsCalc = Math.round(ing.pct * lbsPerHead * 10) / 10;
+            const pctDisplay = Math.round(ing.pct * 1000) / 10;
+            return (
+              <div className="ration-field-row" key={idx}>
+                <input
+                  className="ration-ing-input" style={{ textAlign: "left" }}
+                  value={ing.name}
+                  onChange={e => updateIng(idx, "name", e.target.value)}
+                />
+                {inputMode === "pct" ? (
+                  <>
+                    <input
+                      className="ration-ing-input"
+                      type="number" min="0" max="100" step="0.1"
+                      value={pctDisplay}
+                      onChange={e => updateIng(idx, "pct", parseFloat(e.target.value) / 100 || 0)}
+                    />
+                    <span style={{ textAlign: "right", fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-2)" }}>{lbsCalc}</span>
+                  </>
+                ) : (
+                  <>
+                    <input
+                      className="ration-ing-input"
+                      type="number" min="0" step="0.1"
+                      value={lbsCalc}
+                      onChange={e => {
+                        const newLbs = parseFloat(e.target.value) || 0;
+                        const newPct = lbsPerHead > 0 ? newLbs / lbsPerHead : 0;
+                        updateIng(idx, "pct", Math.round(newPct * 10000) / 10000);
+                      }}
+                    />
+                    <span style={{ textAlign: "right", fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-2)" }}>{pctDisplay}%</span>
+                  </>
+                )}
+                <button className="ration-remove-btn" onClick={() => removeIng(idx)}>×</button>
+              </div>
+            );
+          })}
+
+          <button className="ration-add-btn" onClick={addIng}>+ Add ingredient</button>
+
+          <div className="ration-lbs-row">
+            <span className="ration-lbs-label">Lbs / head</span>
+            <input
+              className="ration-ing-input" type="number" min="0" step="0.1"
+              style={{ width: 80 }}
+              value={lbsPerHead}
+              onChange={e => { setLbsPerHead(e.target.value); setSaved(false); }}
+            />
+          </div>
+
+          <div className={`pct-warning ${pctOk ? "ok" : "warn"}`}>
+            {pctOk ? "✓ Percentages sum to 100%" : `⚠ Percentages sum to ${Math.round(totalPct * 100)}% — must equal 100%`}
+          </div>
+
+          {dirty && (
+            <button className="save-btn" onClick={handleSave} disabled={saving || !pctOk}>
+              {saving ? "Saving…" : "Save ration"}
+            </button>
+          )}
+          {saved && <div className="saved-badge">✓ Saved</div>}
+
+          {hasBase && (
+            <button
+              onClick={handleReset}
+              disabled={resetting}
+              style={{
+                width: "100%", marginTop: 8, padding: "8px",
+                background: "none", border: `1px solid ${confirmReset ? "#8B1A1A" : "var(--border)"}`,
+                borderRadius: 8, fontFamily: "var(--mono)", fontSize: 12,
+                color: confirmReset ? "#8B1A1A" : "var(--text-3)",
+                cursor: "pointer", transition: "all 0.15s",
+              }}
+            >
+              {resetting ? "Resetting…" : confirmReset ? "⚠ Tap again to confirm reset to base ration" : "↩ Reset to base ration"}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AdminView({ pens, rations, events, penSchedules, onSavePen, onSaveSchedule, onSaveRation }) {
   const [tab, setTab] = useState("pens");
   const doneCount = events.filter(e => e.status === "done").length;
   const pendingCount = events.length - doneCount;
@@ -1094,9 +1398,9 @@ function AdminView({ pens, rations, events, penSchedules, onSavePen, onSaveSched
   return (
     <div className="content">
       <div className="nav" style={{ margin: "0 -16px 16px", borderTop: "1px solid var(--border)" }}>
-        {["pens","log"].map(t => (
+        {[["pens","Pen Setup"],["rations","Rations"],["log","Today's Log"]].map(([t,label]) => (
           <button key={t} className={`nav-tab${tab === t ? " active" : ""}`} onClick={() => setTab(t)}>
-            {t === "pens" ? "Pen Setup" : "Today's Log"}
+            {label}
           </button>
         ))}
       </div>
@@ -1142,6 +1446,18 @@ function AdminView({ pens, rations, events, penSchedules, onSavePen, onSaveSched
               })
             )}
           </div>
+        </div>
+      )}
+
+      {tab === "rations" && (
+        <div className="admin-section">
+          <div className="admin-section-title">Ration formulas</div>
+          {rations.map(r => (
+            <div key={r.id}>
+              <RationEditorCard ration={r} variant="ddg" onSave={onSaveRation} />
+              <RationEditorCard ration={r} variant="no-ddg" onSave={onSaveRation} />
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -1302,6 +1618,16 @@ export default function App() {
     }
   }, []);
 
+  const saveRation = useCallback(async (rationId, updates) => {
+    try {
+      await db.updateRation(rationId, updates);
+      setRations(prev => prev.map(r => r.id === rationId ? { ...r, ...updates } : r));
+    } catch (err) {
+      setError("Failed to save ration. Try again.");
+      setTimeout(() => setError(null), 3000);
+    }
+  }, []);
+
   const saveSchedule = useCallback(async (penId, rows) => {
     try {
       await db.upsertPenSchedule(rows);
@@ -1363,7 +1689,7 @@ export default function App() {
         {role === "feeder" ? (
           <FeederView pens={pens} rations={rations} events={events} feeders={feeders} onConfirm={confirmEvent} />
         ) : (
-          <AdminView pens={pens} rations={rations} events={events} penSchedules={penSchedules} onSavePen={savePen} onSaveSchedule={saveSchedule} />
+          <AdminView pens={pens} rations={rations} events={events} penSchedules={penSchedules} onSavePen={savePen} onSaveSchedule={saveSchedule} onSaveRation={saveRation} />
         )}
       </div>
     </>
