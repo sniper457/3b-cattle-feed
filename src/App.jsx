@@ -1249,6 +1249,7 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
   const [resetting, setResetting] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
   const [inputMode, setInputMode] = useState("pct"); // "pct" | "lbs"
+  const [rationName, setRationName] = useState(ration.name);
 
   const baseIngredients = variant === "ddg" ? ration.base_ingredients : ration.base_ingredients_no_ddg;
   const baseLbs = ration.base_lbs_per_head;
@@ -1279,10 +1280,13 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
   async function handleSave() {
     setSaving(true);
     const field = variant === "ddg" ? "ingredients" : "ingredients_no_ddg";
-    await onSave(ration.id, {
+    const updates = {
       [field]: ingredients,
       lbs_per_head: parseFloat(lbsPerHead) || ration.lbs_per_head,
-    });
+    };
+    // Only save name from DDG variant to avoid conflict
+    if (variant === "ddg") updates.name = rationName.trim() || ration.name;
+    await onSave(ration.id, updates);
     setSaving(false);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
@@ -1305,14 +1309,15 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
 
   const dirty = JSON.stringify(ingredients) !== JSON.stringify(
     (variant === "ddg" ? ration.ingredients : ration.ingredients_no_ddg)
-  ) || parseFloat(lbsPerHead) !== ration.lbs_per_head;
+  ) || parseFloat(lbsPerHead) !== ration.lbs_per_head
+  || (variant === "ddg" && rationName.trim() !== ration.name);
 
   return (
     <div className="ration-editor-card">
       <div className="ration-editor-header" onClick={() => { setOpen(o => !o); setConfirmReset(false); }}>
         <div>
           <div className="ration-editor-title">
-            {ration.name} {variant === "no-ddg" ? "· No DDG" : ""}
+            {variant === "ddg" ? rationName : `${rationName} · No DDG`}
             {isModified && <span style={{ marginLeft: 8, fontSize: 10, fontFamily: "var(--mono)", color: "var(--warn)", background: "var(--warn-light)", padding: "2px 6px", borderRadius: 4 }}>modified</span>}
           </div>
           <div className="ration-editor-meta">{lbsPerHead} lbs/head · {ingredients.length} ingredients</div>
@@ -1322,6 +1327,17 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
 
       {open && (
         <div className="ration-editor-body">
+          {variant === "ddg" && (
+            <div className="field-row" style={{ marginBottom: 10 }}>
+              <span className="field-label">Ration name</span>
+              <input
+                className="field-input"
+                value={rationName}
+                onChange={e => { setRationName(e.target.value); setSaved(false); }}
+                placeholder="e.g. Starter AM"
+              />
+            </div>
+          )}
           <div className="input-mode-toggle">
             <button className={`input-mode-btn${inputMode === "pct" ? " active" : ""}`} onClick={() => setInputMode("pct")}>% Percentage</button>
             <button className={`input-mode-btn${inputMode === "lbs" ? " active" : ""}`} onClick={() => setInputMode("lbs")}>lbs Direct</button>
