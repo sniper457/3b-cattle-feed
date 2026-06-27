@@ -67,6 +67,10 @@ const db = {
       method: "PATCH",
       body: JSON.stringify(updates),
     }),
+  getTodaySchedule: () => {
+    const today = new Date().toLocaleDateString("en-CA");
+    return sbFetch(`/pen_schedule?select=*&date=eq.${today}`);
+  },
 };
 
 // ── REALTIME ──────────────────────────────────────────────────────────────────
@@ -1018,7 +1022,7 @@ function getCurrentFeedPeriod() {
   return "PM";
 }
 
-function FeederView({ pens, rations, events, feeders, onConfirm }) {
+function FeederView({ pens, rations, events, feeders, todaySchedule, onConfirm }) {
   const [feederName, setFeederName] = useState(feeders[0] || "");
   const [feedPeriod, setFeedPeriod] = useState(getCurrentFeedPeriod);
 
@@ -1027,22 +1031,28 @@ function FeederView({ pens, rations, events, feeders, onConfirm }) {
     return () => clearInterval(timer);
   }, []);
 
-  const visibleEvents = events.filter(e => e.time_of_day === feedPeriod);
-  const doneCount = visibleEvents.filter(e => e.status === "done").length;
-  const total = visibleEvents.length || 1;
-
   const isAM = feedPeriod === "AM";
   const periodLabel = isAM ? "Morning · AM Feed" : "Afternoon · PM Feed";
   const periodTime = isAM ? "12:01 AM – 12:59 PM" : "1:00 PM – 12:00 AM";
 
-  function renderCards(evts) {
-    return evts.map(ev => {
-      const pen = pens.find(p => p.id === ev.pen_id);
-      const ration = rations.find(r => r.id === pen?.ration_id);
-      if (!pen || !ration) return null;
-      return <FeedCard key={ev.id} pen={pen} ration={ration} event={ev} onConfirm={onConfirm} feederName={feederName} />;
-    });
-  }
+  // Only show active pens that have a schedule entry for today matching the feed period
+  const visibleSchedule = todaySchedule.filter(s => {
+    const pen = pens.find(p => p.id === s.pen_id);
+    if (!pen || !pen.is_active) return false;
+    const ration = rations.find(r => r.id === s.ration_id);
+    return ration?.time_of_day === feedPeriod;
+  });
+
+  // Match schedule entries to feed events for confirmation state
+  const visibleCards = visibleSchedule.map(s => {
+    const pen = pens.find(p => p.id === s.pen_id);
+    const ration = rations.find(r => r.id === s.ration_id);
+    const event = events.find(e => e.pen_id === s.pen_id && e.time_of_day === feedPeriod);
+    return { pen, ration, event, scheduleId: s.id };
+  }).filter(c => c.pen && c.ration);
+
+  const doneCount = visibleCards.filter(c => c.event?.status === "done").length;
+  const total = visibleCards.length || 1;
 
   return (
     <div className="content">
@@ -1057,7 +1067,7 @@ function FeederView({ pens, rations, events, feeders, onConfirm }) {
       <div className="progress-wrap">
         <div className="progress-header">
           <span className="progress-label">{periodLabel}</span>
-          <span className="progress-count">{doneCount} / {visibleEvents.length} done</span>
+          <span className="progress-count">{doneCount} / {visibleCards.length} done</span>
         </div>
         <div className="progress-track">
           <div className="progress-fill" style={{ width: `${Math.round(doneCount / total * 100)}%` }} />
@@ -1067,8 +1077,17 @@ function FeederView({ pens, rations, events, feeders, onConfirm }) {
         </div>
       </div>
 
-      {visibleEvents.length > 0
-        ? renderCards(visibleEvents)
+      {visibleCards.length > 0
+        ? visibleCards.map(({ pen, ration, event }) => (
+            <FeedCard
+              key={`${pen.id}-${feedPeriod}`}
+              pen={pen}
+              ration={ration}
+              event={event || { id: `${pen.id}-${feedPeriod}`, pen_id: pen.id, time_of_day: feedPeriod, status: "pending", confirmed_by: null, confirmed_at: null }}
+              onConfirm={onConfirm}
+              feederName={feederName}
+            />
+          ))
         : <div style={{ textAlign: "center", fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-3)", paddingTop: 40 }}>
             No {feedPeriod} feedings scheduled for today
           </div>
@@ -1111,6 +1130,7 @@ function PenCard({ pen, rations, schedule, onSave, onSaveSchedule }) {
       ration_id: local.ration_id,
       use_ddg: local.use_ddg,
       total_lbs_override: local.total_lbs_override,
+      is_active: local.is_active,
     });
     setSaving(false); setSaved(true);
     setTimeout(() => setSaved(false), 2000);
@@ -1124,7 +1144,17 @@ function PenCard({ pen, rations, schedule, onSave, onSaveSchedule }) {
       <div className="pen-admin-card">
         <div className="pen-admin-header">
           <div className="pen-admin-name">{pen.name}</div>
-          <div className={`pen-tag ${pen.type.toLowerCase()}`}>{pen.type}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 11, fontFamily: "var(--mono)", color: local.is_active ? "var(--accent)" : "var(--text-3)" }}>
+              {local.is_active ? "Active" : "Inactive"}
+            </span>
+            <button
+              className={`toggle${local.is_active ? " on" : ""}`}
+              onClick={() => set("is_active", !local.is_active)}
+              aria-label={local.is_active ? "Deactivate pen" : "Activate pen"}
+            />
+            <div className={`pen-tag ${pen.type.toLowerCase()}`}>{pen.type}</div>
+          </div>
         </div>
 
         <div className="field-row">
@@ -1514,6 +1544,7 @@ export default function App() {
   const [events, setEvents] = useState([]);
   const [feeders, setFeeders] = useState([]);
   const [penSchedules, setPenSchedules] = useState({});
+  const [todaySchedule, setTodaySchedule] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [offlinePending, setOfflinePending] = useState(() => loadQueue().length);
@@ -1534,13 +1565,14 @@ export default function App() {
     async function load() {
       try {
         await db.generateTodayEvents();
-        const [p, r, e, f] = await Promise.all([
-          db.getPens(), db.getRations(), db.getTodayEvents(), db.getFeeders(),
+        const [p, r, e, f, ts] = await Promise.all([
+          db.getPens(), db.getRations(), db.getTodayEvents(), db.getFeeders(), db.getTodaySchedule(),
         ]);
         setPens(p || []);
         setRations(r || []);
         setEvents(e || []);
         setFeeders((f || []).map(x => x.name));
+        setTodaySchedule(ts || []);
         await loadSchedules(p || []);
       } catch (err) {
         setError(err.message);
@@ -1687,7 +1719,7 @@ export default function App() {
         {error && <div className="error-bar">{error}</div>}
 
         {role === "feeder" ? (
-          <FeederView pens={pens} rations={rations} events={events} feeders={feeders} onConfirm={confirmEvent} />
+          <FeederView pens={pens} rations={rations} events={events} feeders={feeders} todaySchedule={todaySchedule} onConfirm={confirmEvent} />
         ) : (
           <AdminView pens={pens} rations={rations} events={events} penSchedules={penSchedules} onSavePen={savePen} onSaveSchedule={saveSchedule} onSaveRation={saveRation} />
         )}
