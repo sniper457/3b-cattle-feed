@@ -1260,7 +1260,7 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
   );
 
   const totalPct = Math.round(ingredients.reduce((s, i) => s + (parseFloat(i.pct) || 0), 0) * 100) / 100;
-  const pctOk = Math.abs(totalPct - 1) < 0.005;
+  const pctOk = inputMode === "lbs" || Math.abs(totalPct - 1) < 0.005;
 
   function updateIng(idx, field, val) {
     setIngredients(prev => prev.map((i, n) => n === idx ? { ...i, [field]: field === "pct" ? parseFloat(val) || 0 : val } : i));
@@ -1402,9 +1402,11 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
             />
           </div>
 
-          <div className={`pct-warning ${pctOk ? "ok" : "warn"}`}>
-            {pctOk ? "✓ Percentages sum to 100%" : `⚠ Percentages sum to ${Math.round(totalPct * 100)}% — must equal 100%`}
-          </div>
+          {inputMode === "pct" && (
+            <div className={`pct-warning ${pctOk ? "ok" : "warn"}`}>
+              {pctOk ? "✓ Percentages sum to 100%" : `⚠ Percentages sum to ${Math.round(totalPct * 100)}% — must equal 100%`}
+            </div>
+          )}
 
           {dirty && (
             <button className="save-btn" onClick={handleSave} disabled={saving || !pctOk}>
