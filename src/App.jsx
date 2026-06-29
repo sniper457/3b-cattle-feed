@@ -1251,6 +1251,11 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
   const [inputMode, setInputMode] = useState("pct"); // "pct" | "lbs"
   const [rationName, setRationName] = useState(ration.name);
 
+  // Sync name if parent rations array updates (e.g. after another card saves)
+  useEffect(() => {
+    setRationName(ration.name);
+  }, [ration.name]);
+
   const baseIngredients = variant === "ddg" ? ration.base_ingredients : ration.base_ingredients_no_ddg;
   const baseLbs = ration.base_lbs_per_head;
   const hasBase = !!baseIngredients;
@@ -1671,7 +1676,9 @@ export default function App() {
   const saveRation = useCallback(async (rationId, updates) => {
     try {
       await db.updateRation(rationId, updates);
-      setRations(prev => prev.map(r => r.id === rationId ? { ...r, ...updates } : r));
+      // Re-fetch all rations to ensure fresh state — avoids stale merge issues
+      const fresh = await db.getRations();
+      if (fresh) setRations(fresh);
     } catch (err) {
       setError("Failed to save ration. Try again.");
       setTimeout(() => setError(null), 3000);
