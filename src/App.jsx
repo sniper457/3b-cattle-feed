@@ -53,7 +53,7 @@ const db = {
   getPenSchedule: (penId) =>
     sbFetch(`/pen_schedule?pen_id=eq.${penId}&date=gte.${new Date().toISOString().split("T")[0]}&order=date`),
   upsertPenSchedule: (rows) =>
-    sbFetch("/pen_schedule", {
+    sbFetch("/pen_schedule?on_conflict=pen_id,date", {
       method: "POST",
       headers: { "Prefer": "resolution=merge-duplicates,return=representation" },
       body: JSON.stringify(rows),
