@@ -1120,17 +1120,7 @@ function PenCard({ pen, rations, schedule, onSave, onSaveSchedule }) {
 
   const amRations = rations.filter(r => r.time_of_day === "AM");
   const pmRations = rations.filter(r => r.time_of_day === "PM");
-
-  // Default ration dropdowns per tab
-  const [amRationId, setAmRationId] = useState(
-    amRations.find(r => r.id === pen.ration_id)?.id || amRations[0]?.id || ""
-  );
-  const [pmRationId, setPmRationId] = useState(
-    pmRations.find(r => r.id === pen.ration_id)?.id || pmRations[0]?.id || ""
-  );
-
-  const ration = rations.find(r => r.id === local.ration_id);
-  const totalLbs = local.total_lbs || 0;
+  const totalLbs = parseFloat(local.total_lbs) || 0;
 
   function set(field, value) { setLocal(prev => ({ ...prev, [field]: value })); setSaved(false); }
 
@@ -1138,7 +1128,6 @@ function PenCard({ pen, rations, schedule, onSave, onSaveSchedule }) {
     setSaving(true);
     await onSave(pen.id, {
       head_count: local.head_count,
-      ration_id: local.ration_id,
       use_ddg: local.use_ddg,
       total_lbs: local.total_lbs || 0,
       is_active: local.is_active,
@@ -1173,19 +1162,6 @@ function PenCard({ pen, rations, schedule, onSave, onSaveSchedule }) {
           <input className="field-input" type="number" min="1"
             value={local.head_count}
             onChange={e => set("head_count", parseInt(e.target.value) || 1)} />
-        </div>
-
-        <div className="field-row">
-          <span className="field-label">Ration</span>
-          <select className="field-select" value={local.ration_id}
-            onChange={e => set("ration_id", e.target.value)}>
-            <optgroup label="AM">
-              {amRations.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
-            </optgroup>
-            <optgroup label="PM">
-              {pmRations.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
-            </optgroup>
-          </select>
         </div>
 
         <div className="toggle-row">
