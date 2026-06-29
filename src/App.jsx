@@ -1350,7 +1350,11 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
           )}
           <div className="input-mode-toggle">
             <button className={`input-mode-btn${inputMode === "pct" ? " active" : ""}`} onClick={() => setInputMode("pct")}>% Percentage</button>
-            <button className={`input-mode-btn${inputMode === "lbs" ? " active" : ""}`} onClick={() => setInputMode("lbs")}>lbs Direct</button>
+            <button className={`input-mode-btn${inputMode === "lbs" ? " active" : ""}`} onClick={() => {
+              // Pre-populate _rawLbs from current pct × 100 as a ratio starting point
+              setIngredients(prev => prev.map(i => ({ ...i, _rawLbs: Math.round(i.pct * 1000) / 10 })));
+              setInputMode("lbs");
+            }}>lbs Direct</button>
           </div>
 
           <div className="ration-field-row header">
@@ -1360,9 +1364,14 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
             <span></span>
           </div>
 
-          {ingredients.map((ing, idx) => {
-            const lbsCalc = Math.round(ing.pct * lbsPerHead * 10) / 10;
-            const pctDisplay = Math.round(ing.pct * 1000) / 10;
+          {(() => {
+            const totalRaw = inputMode === "lbs"
+              ? ingredients.reduce((s, i) => s + (parseFloat(i._rawLbs) || 0), 0)
+              : 0;
+            return ingredients.map((ing, idx) => {
+            const pctDisplay = inputMode === "lbs" && totalRaw > 0
+              ? Math.round((parseFloat(ing._rawLbs) || 0) / totalRaw * 1000) / 10
+              : Math.round(ing.pct * 1000) / 10;
             return (
               <div className="ration-field-row" key={idx}>
                 <input
@@ -1378,18 +1387,17 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
                       value={pctDisplay}
                       onChange={e => updateIng(idx, "pct", parseFloat(e.target.value) / 100 || 0)}
                     />
-                    <span style={{ textAlign: "right", fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-2)" }}>{lbsCalc}</span>
+                    <span style={{ textAlign: "right", fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-2)" }}>{pctDisplay}%</span>
                   </>
                 ) : (
                   <>
                     <input
                       className="ration-ing-input"
                       type="number" min="0" step="0.1"
-                      value={lbsCalc}
+                      value={ing._rawLbs !== undefined ? ing._rawLbs : Math.round(ing.pct * 1000) / 10}
                       onChange={e => {
                         const newLbs = parseFloat(e.target.value) || 0;
-                        const newPct = lbsPerHead > 0 ? newLbs / lbsPerHead : 0;
-                        updateIng(idx, "pct", Math.round(newPct * 10000) / 10000);
+                        updateIng(idx, "_rawLbs", newLbs);
                       }}
                     />
                     <span style={{ textAlign: "right", fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-2)" }}>{pctDisplay}%</span>
@@ -1398,7 +1406,8 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
                 <button className="ration-remove-btn" onClick={() => removeIng(idx)}>×</button>
               </div>
             );
-          })}
+            });
+          })()}
 
           <button className="ration-add-btn" onClick={addIng}>+ Add ingredient</button>
 
@@ -1415,6 +1424,11 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
           {inputMode === "pct" && (
             <div className={`pct-warning ${pctOk ? "ok" : "warn"}`}>
               {pctOk ? "✓ Percentages sum to 100%" : `⚠ Percentages sum to ${Math.round(totalPct * 100)}% — must equal 100%`}
+            </div>
+          )}
+          {inputMode === "lbs" && (
+            <div className="pct-warning ok">
+              Enter ingredient weights as ratios — percentages back-calculate from total
             </div>
           )}
 
