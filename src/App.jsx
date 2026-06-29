@@ -104,10 +104,8 @@ function subscribeRealtime(table, onChange) {
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
 
-function getTotalLbs(pen, ration) {
-  if (pen.total_lbs_override !== null && pen.total_lbs_override !== undefined)
-    return pen.total_lbs_override;
-  return Math.round(pen.head_count * ration.lbs_per_head * 10) / 10;
+function getTotalLbs(pen) {
+  return pen.total_lbs || 0;
 }
 
 function getIngredients(ration, useDdg, totalLbs) {
@@ -962,7 +960,7 @@ function MixerMode({ ingredients, totalLbs, onFinish, onCancel }) {
 function FeedCard({ pen, ration, event, onConfirm, feederName }) {
   const [mode, setMode] = useState("card"); // "card" | "overview" | "mixing"
   const [confirming, setConfirming] = useState(false);
-  const totalLbs = getTotalLbs(pen, ration);
+  const totalLbs = getTotalLbs(pen);
   const isDone = event.status === "done";
   const ingredients = getIngredients(ration, pen.use_ddg, totalLbs);
 
@@ -1122,9 +1120,7 @@ function PenCard({ pen, rations, schedule, onSave, onSaveSchedule }) {
   );
 
   const ration = rations.find(r => r.id === local.ration_id);
-  const calcLbs = ration ? Math.round(local.head_count * ration.lbs_per_head * 10) / 10 : 0;
-  const totalLbs = (local.total_lbs_override !== null && local.total_lbs_override !== undefined)
-    ? local.total_lbs_override : calcLbs;
+  const totalLbs = local.total_lbs || 0;
 
   function set(field, value) { setLocal(prev => ({ ...prev, [field]: value })); setSaved(false); }
 
@@ -1134,7 +1130,7 @@ function PenCard({ pen, rations, schedule, onSave, onSaveSchedule }) {
       head_count: local.head_count,
       ration_id: local.ration_id,
       use_ddg: local.use_ddg,
-      total_lbs_override: local.total_lbs_override,
+      total_lbs: local.total_lbs || 0,
       is_active: local.is_active,
     });
     setSaving(false); setSaved(true);
@@ -1193,16 +1189,10 @@ function PenCard({ pen, rations, schedule, onSave, onSaveSchedule }) {
 
         <div className="total-lbs-row">
           <span className="field-label">Total lbs</span>
-          <input className="field-input" type="number" min="1" step="0.5"
+          <input className="field-input" type="number" min="0" step="0.5"
             value={totalLbs}
-            onChange={e => set("total_lbs_override", parseFloat(e.target.value) || calcLbs)} />
-          {local.total_lbs_override !== null && local.total_lbs_override !== undefined && (
-            <button className="override-clear" onClick={() => set("total_lbs_override", null)}>reset</button>
-          )}
+            onChange={e => set("total_lbs", parseFloat(e.target.value) || 0)} />
         </div>
-        {local.total_lbs_override !== null && local.total_lbs_override !== undefined && (
-          <div className="calc-lbs">Calculated: {calcLbs} lbs · override active</div>
-        )}
 
         {dirty && (
           <button className="save-btn" onClick={handleSave} disabled={saving}>
@@ -1248,7 +1238,6 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
   const [ingredients, setIngredients] = useState(
     (variant === "ddg" ? ration.ingredients : ration.ingredients_no_ddg).map(i => ({ ...i }))
   );
-  const [lbsPerHead, setLbsPerHead] = useState(ration.lbs_per_head);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [resetting, setResetting] = useState(false);
@@ -1264,10 +1253,7 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
   const baseIngredients = variant === "ddg" ? ration.base_ingredients : ration.base_ingredients_no_ddg;
   const baseLbs = ration.base_lbs_per_head;
   const hasBase = !!baseIngredients;
-  const isModified = hasBase && (
-    JSON.stringify(ingredients) !== JSON.stringify(baseIngredients) ||
-    parseFloat(lbsPerHead) !== baseLbs
-  );
+  const isModified = hasBase && JSON.stringify(ingredients) !== JSON.stringify(baseIngredients);
 
   const totalPct = Math.round(ingredients.reduce((s, i) => s + (parseFloat(i.pct) || 0), 0) * 100) / 100;
   const pctOk = inputMode === "lbs" || Math.abs(totalPct - 1) < 0.005;
@@ -1308,10 +1294,8 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
     const field = variant === "ddg" ? "ingredients" : "ingredients_no_ddg";
     await onSave(ration.id, {
       [field]: baseIngredients,
-      lbs_per_head: baseLbs,
     });
     setIngredients(baseIngredients.map(i => ({ ...i })));
-    setLbsPerHead(baseLbs);
     setResetting(false);
     setConfirmReset(false);
     setSaved(false);
@@ -1330,7 +1314,7 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
             {variant === "ddg" ? rationName : `${rationName} · No DDG`}
             {isModified && <span style={{ marginLeft: 8, fontSize: 10, fontFamily: "var(--mono)", color: "var(--warn)", background: "var(--warn-light)", padding: "2px 6px", borderRadius: 4 }}>modified</span>}
           </div>
-          <div className="ration-editor-meta">{lbsPerHead} lbs/head · {ingredients.length} ingredients</div>
+          <div className="ration-editor-meta">{ingredients.length} ingredients</div>
         </div>
         <span className={`ration-editor-chevron${open ? " open" : ""}`}>▼</span>
       </div>
@@ -1410,16 +1394,6 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
           })()}
 
           <button className="ration-add-btn" onClick={addIng}>+ Add ingredient</button>
-
-          <div className="ration-lbs-row">
-            <span className="ration-lbs-label">Lbs / head</span>
-            <input
-              className="ration-ing-input" type="number" min="0" step="0.1"
-              style={{ width: 80 }}
-              value={lbsPerHead}
-              onChange={e => { setLbsPerHead(e.target.value); setSaved(false); }}
-            />
-          </div>
 
           {inputMode === "pct" && (
             <div className={`pct-warning ${pctOk ? "ok" : "warn"}`}>
