@@ -1275,10 +1275,26 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
   async function handleSave() {
     setSaving(true);
     const field = variant === "ddg" ? "ingredients" : "ingredients_no_ddg";
-    const updates = { [field]: ingredients };
-    // Always save name
+
+    // In lbs Direct mode: back-calculate percentages from raw weight ratios
+    let finalIngredients;
+    if (inputMode === "lbs") {
+      const totalRaw = ingredients.reduce((s, i) => s + (parseFloat(i._rawLbs) || 0), 0);
+      finalIngredients = totalRaw > 0
+        ? ingredients.map(i => ({
+            name: i.name,
+            pct: Math.round((parseFloat(i._rawLbs) || 0) / totalRaw * 10000) / 10000,
+          }))
+        : ingredients.map(({ name, pct }) => ({ name, pct }));
+    } else {
+      // Always strip _rawLbs before saving
+      finalIngredients = ingredients.map(({ name, pct }) => ({ name, pct }));
+    }
+
+    const updates = { [field]: finalIngredients };
     updates.name = rationName.trim() || ration.name;
     await onSave(ration.id, updates);
+    setIngredients(finalIngredients);
     setSaving(false);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
