@@ -104,12 +104,22 @@ function subscribeRealtime(table, onChange) {
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
 
-function getTotalLbs(pen) {
+function getTotalLbs(pen, ration) {
+  if (ration?.mode === "lbs") {
+    // lbs Direct: total is sum of stored ingredient lbs
+    const list = pen.use_ddg ? ration.ingredients : ration.ingredients_no_ddg;
+    return Math.round((list || []).reduce((s, i) => s + (i.lbs || 0), 0) * 10) / 10;
+  }
   return pen.total_lbs || 0;
 }
 
 function getIngredients(ration, useDdg, totalLbs) {
   const list = useDdg ? ration.ingredients : ration.ingredients_no_ddg;
+  if (ration.mode === "lbs") {
+    // lbs Direct: stored lbs are the exact amounts — no calculation needed
+    return list.map(i => ({ ...i, lbs: i.lbs || 0 }));
+  }
+  // pct mode: calculate from pen total lbs × percentage
   return list.map(i => ({ ...i, lbs: Math.round(i.pct * totalLbs * 10) / 10 }));
 }
 
@@ -960,7 +970,7 @@ function MixerMode({ ingredients, totalLbs, onFinish, onCancel }) {
 function FeedCard({ pen, ration, event, onConfirm, feederName }) {
   const [mode, setMode] = useState("card"); // "card" | "overview" | "mixing"
   const [confirming, setConfirming] = useState(false);
-  const totalLbs = getTotalLbs(pen);
+  const totalLbs = getTotalLbs(pen, ration);
   const isDone = event.status === "done";
   const ingredients = getIngredients(ration, pen.use_ddg, totalLbs);
 
@@ -979,7 +989,7 @@ function FeedCard({ pen, ration, event, onConfirm, feederName }) {
           <div className={`pen-tag ${pen.type.toLowerCase()}`}>{pen.type}</div>
           <div className="feed-card-name">{pen.name}</div>
           <div className="feed-card-meta">
-            {ration.name} · {totalLbs} lbs · {pen.head_count} head
+            {ration.name} · {totalLbs} lbs{ration.mode !== "lbs" && ` · ${pen.head_count} head`}
           </div>
           <div className={`status-badge ${isDone ? "done" : "pending"}`}>
             {isDone ? `✓ ${event.confirmed_by} · ${fmtTime(event.confirmed_at)}` : "Pending"}
@@ -1242,13 +1252,19 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
   const [saved, setSaved] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
-  const [inputMode, setInputMode] = useState("pct"); // "pct" | "lbs"
+  const [inputMode, setInputMode] = useState(ration.mode === "lbs" ? "lbs" : "pct");
   const [rationName, setRationName] = useState(ration.name);
 
-  // Sync name if parent rations array updates (e.g. after another card saves)
+  // Sync name and mode if parent rations array updates
   useEffect(() => {
     setRationName(ration.name);
-  }, [ration.name]);
+    const newMode = ration.mode === "lbs" ? "lbs" : "pct";
+    setInputMode(newMode);
+    if (newMode === "lbs") {
+      const list = variant === "ddg" ? ration.ingredients : ration.ingredients_no_ddg;
+      setIngredients((list || []).map(i => ({ ...i, _rawLbs: i.lbs || 0 })));
+    }
+  }, [ration.name, ration.mode]);
 
   const baseIngredients = variant === "ddg" ? ration.base_ingredients : ration.base_ingredients_no_ddg;
   const hasBase = !!baseIngredients;
@@ -1276,23 +1292,23 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
     setSaving(true);
     const field = variant === "ddg" ? "ingredients" : "ingredients_no_ddg";
 
-    // In lbs Direct mode: back-calculate percentages from raw weight ratios
     let finalIngredients;
     if (inputMode === "lbs") {
-      const totalRaw = ingredients.reduce((s, i) => s + (parseFloat(i._rawLbs) || 0), 0);
-      finalIngredients = totalRaw > 0
-        ? ingredients.map(i => ({
-            name: i.name,
-            pct: Math.round((parseFloat(i._rawLbs) || 0) / totalRaw * 10000) / 10000,
-          }))
-        : ingredients.map(({ name, pct }) => ({ name, pct }));
+      // lbs Direct: store exact lbs — no percentage calculation
+      finalIngredients = ingredients.map(i => ({
+        name: i.name,
+        lbs: parseFloat(i._rawLbs) || 0,
+      }));
     } else {
-      // Always strip _rawLbs before saving
+      // pct mode: store clean percentages only
       finalIngredients = ingredients.map(({ name, pct }) => ({ name, pct }));
     }
 
-    const updates = { [field]: finalIngredients };
-    updates.name = rationName.trim() || ration.name;
+    const updates = {
+      [field]: finalIngredients,
+      mode: inputMode,
+      name: rationName.trim() || ration.name,
+    };
     await onSave(ration.id, updates);
     setIngredients(finalIngredients);
     setSaving(false);
@@ -1346,8 +1362,10 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
           <div className="input-mode-toggle">
             <button className={`input-mode-btn${inputMode === "pct" ? " active" : ""}`} onClick={() => setInputMode("pct")}>% Percentage</button>
             <button className={`input-mode-btn${inputMode === "lbs" ? " active" : ""}`} onClick={() => {
-              // Pre-populate _rawLbs from current pct × 100 as a ratio starting point
-              setIngredients(prev => prev.map(i => ({ ...i, _rawLbs: Math.round(i.pct * 1000) / 10 })));
+              setIngredients(prev => prev.map(i => ({
+                ...i,
+                _rawLbs: i.lbs !== undefined ? i.lbs : Math.round(i.pct * 1000) / 10
+              })));
               setInputMode("lbs");
             }}>lbs Direct</button>
           </div>
@@ -1413,7 +1431,7 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
           )}
           {inputMode === "lbs" && (
             <div className="pct-warning ok">
-              Enter ingredient weights as ratios — percentages back-calculate from total
+              Exact lbs stored — feeder mixes these exact amounts, no pen total needed
             </div>
           )}
 
