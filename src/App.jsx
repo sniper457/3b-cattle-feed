@@ -1251,7 +1251,6 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
   }, [ration.name]);
 
   const baseIngredients = variant === "ddg" ? ration.base_ingredients : ration.base_ingredients_no_ddg;
-  const baseLbs = ration.base_lbs_per_head;
   const hasBase = !!baseIngredients;
   const isModified = hasBase && JSON.stringify(ingredients) !== JSON.stringify(baseIngredients);
 
@@ -1276,12 +1275,9 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
   async function handleSave() {
     setSaving(true);
     const field = variant === "ddg" ? "ingredients" : "ingredients_no_ddg";
-    const updates = {
-      [field]: ingredients,
-      lbs_per_head: parseFloat(lbsPerHead) || ration.lbs_per_head,
-    };
-    // Only save name from DDG variant to avoid conflict
-    if (variant === "ddg") updates.name = rationName.trim() || ration.name;
+    const updates = { [field]: ingredients };
+    // Always save name
+    updates.name = rationName.trim() || ration.name;
     await onSave(ration.id, updates);
     setSaving(false);
     setSaved(true);
@@ -1303,8 +1299,7 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
 
   const dirty = JSON.stringify(ingredients) !== JSON.stringify(
     (variant === "ddg" ? ration.ingredients : ration.ingredients_no_ddg)
-  ) || parseFloat(lbsPerHead) !== ration.lbs_per_head
-  || (variant === "ddg" && rationName.trim() !== ration.name);
+  ) || rationName.trim() !== ration.name;
 
   return (
     <div className="ration-editor-card">
