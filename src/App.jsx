@@ -1048,7 +1048,9 @@ function FeederView({ pens, rations, events, feeders, todaySchedule, onConfirm }
     const pen = pens.find(p => p.id === s.pen_id);
     const ration = rations.find(r => r.id === s.ration_id);
     const event = events.find(e => e.pen_id === s.pen_id && e.time_of_day === feedPeriod);
-    return { pen, ration, event, scheduleId: s.id };
+    // Use schedule entry's use_ddg, not pen's current setting
+    const useDdg = s.use_ddg ?? pen?.use_ddg ?? true;
+    return { pen: pen ? { ...pen, use_ddg: useDdg } : pen, ration, event, scheduleId: s.id };
   }).filter(c => c.pen && c.ration);
 
   const doneCount = visibleCards.filter(c => c.event?.status === "done").length;
@@ -1638,6 +1640,14 @@ export default function App() {
   useEffect(() => {
     const unsub = subscribeRealtime("pens", () => {
       db.getPens().then(p => { setPens(p || []); loadSchedules(p || []); });
+    });
+    return unsub;
+  }, []);
+
+  // Realtime: rations — so feeder sees updated numbers immediately when admin changes a ration
+  useEffect(() => {
+    const unsub = subscribeRealtime("rations", () => {
+      db.getRations().then(r => { if (r) setRations(r); });
     });
     return unsub;
   }, []);
