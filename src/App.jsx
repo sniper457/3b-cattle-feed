@@ -1103,6 +1103,9 @@ function PenCard({ pen, rations, schedule, onSave, onSaveSchedule }) {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [showCal, setShowCal] = useState(null); // null | "AM" | "PM"
+
+  // Sync if pen id changes (switching pens)
+  useEffect(() => { setLocal({ ...pen }); }, [pen.id]);
   const dirty = JSON.stringify(local) !== JSON.stringify(pen);
 
   const amRations = rations.filter(r => r.time_of_day === "AM");
