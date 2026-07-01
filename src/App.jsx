@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 
 // ── SUPABASE ──────────────────────────────────────────────────────────────────
 
@@ -1262,18 +1262,23 @@ function PenCard({ pen, rations, schedule, onSave, onSaveSchedule }) {
 // ── ADMIN VIEW ────────────────────────────────────────────────────────────────
 
 
-function RationCard({ ration, onSave, onDelete, isNew, onCancelNew }) {
+// Legacy rations may still have %-based ingredients (pct of a pen's total lbs).
+// We only ever edit in fixed lbs now — this gives old % entries a starting lbs
+// number (pct × 100) so an admin can review and correct the real amount.
+function toLbsIngredient(i) {
+  return {
+    name: i.name || "",
+    lbs: i.lbs !== undefined ? Math.round((parseFloat(i.lbs) || 0) * 10) / 10 : Math.round((i.pct || 0) * 1000) / 10,
+  };
+}
+
+function RationCard({ ration, onSave, onDelete, isNew, onCancelNew, knownIngredients }) {
   const [open, setOpen] = useState(!!isNew);
   const [variant, setVariant] = useState("ddg"); // "ddg" | "no-ddg"
   const [rationName, setRationName] = useState(ration.name || "");
   const [timeOfDay, setTimeOfDay] = useState(ration.time_of_day || "AM");
-  const [inputMode, setInputMode] = useState(ration.mode === "lbs" ? "lbs" : "pct");
-  const [ddgIngredients, setDdgIngredients] = useState(
-    (ration.ingredients || []).map(i => ({ ...i, _rawLbs: i.lbs !== undefined ? i.lbs : Math.round((i.pct || 0) * 1000) / 10 }))
-  );
-  const [noDdgIngredients, setNoDdgIngredients] = useState(
-    (ration.ingredients_no_ddg || []).map(i => ({ ...i, _rawLbs: i.lbs !== undefined ? i.lbs : Math.round((i.pct || 0) * 1000) / 10 }))
-  );
+  const [ddgIngredients, setDdgIngredients] = useState((ration.ingredients || []).map(toLbsIngredient));
+  const [noDdgIngredients, setNoDdgIngredients] = useState((ration.ingredients_no_ddg || []).map(toLbsIngredient));
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [resetting, setResetting] = useState(false);
@@ -1286,32 +1291,36 @@ function RationCard({ ration, onSave, onDelete, isNew, onCancelNew }) {
     if (isNew) return;
     setRationName(ration.name);
     setTimeOfDay(ration.time_of_day);
-    setInputMode(ration.mode === "lbs" ? "lbs" : "pct");
-    setDdgIngredients((ration.ingredients || []).map(i => ({ ...i, _rawLbs: i.lbs !== undefined ? i.lbs : Math.round((i.pct || 0) * 1000) / 10 })));
-    setNoDdgIngredients((ration.ingredients_no_ddg || []).map(i => ({ ...i, _rawLbs: i.lbs !== undefined ? i.lbs : Math.round((i.pct || 0) * 1000) / 10 })));
-  }, [ration.id, ration.name, ration.mode, ration.time_of_day]);
+    setDdgIngredients((ration.ingredients || []).map(toLbsIngredient));
+    setNoDdgIngredients((ration.ingredients_no_ddg || []).map(toLbsIngredient));
+  }, [ration.id, ration.name, ration.time_of_day]);
 
   const ingredients = variant === "ddg" ? ddgIngredients : noDdgIngredients;
   const setIngredients = variant === "ddg" ? setDdgIngredients : setNoDdgIngredients;
   const baseIngredients = variant === "ddg" ? ration.base_ingredients : ration.base_ingredients_no_ddg;
   const hasBase = !isNew && !!baseIngredients;
 
-  function stripRaw(list) { return list.map(({ _rawLbs, ...rest }) => rest); }
+  // Strip the transient "_custom" UI flag (marks a row as free-text entry) before
+  // saving or comparing against stored data.
+  function cleanIng(i) { return { name: i.name, lbs: parseFloat(i.lbs) || 0 }; }
 
   const isModified = !isNew && (
-    (!!ration.base_ingredients && JSON.stringify(stripRaw(ddgIngredients)) !== JSON.stringify(ration.base_ingredients)) ||
-    (!!ration.base_ingredients_no_ddg && JSON.stringify(stripRaw(noDdgIngredients)) !== JSON.stringify(ration.base_ingredients_no_ddg))
+    (!!ration.base_ingredients && JSON.stringify(ddgIngredients.map(cleanIng)) !== JSON.stringify(ration.base_ingredients.map(toLbsIngredient))) ||
+    (!!ration.base_ingredients_no_ddg && JSON.stringify(noDdgIngredients.map(cleanIng)) !== JSON.stringify(ration.base_ingredients_no_ddg.map(toLbsIngredient)))
   );
 
-  function pctTotal(list) {
-    return Math.round(list.reduce((s, i) => s + (parseFloat(i.pct) || 0), 0) * 100) / 100;
+  function updateName(idx, name) {
+    setIngredients(prev => prev.map((i, n) => n === idx ? { ...i, name } : i));
+    setSaved(false);
   }
-  const ddgPctOk = inputMode === "lbs" || ddgIngredients.length === 0 || Math.abs(pctTotal(ddgIngredients) - 1) < 0.005;
-  const noDdgPctOk = inputMode === "lbs" || noDdgIngredients.length === 0 || Math.abs(pctTotal(noDdgIngredients) - 1) < 0.005;
-  const activePctOk = variant === "ddg" ? ddgPctOk : noDdgPctOk;
 
-  function updateIng(idx, field, val) {
-    setIngredients(prev => prev.map((i, n) => n === idx ? { ...i, [field]: field === "pct" ? (parseFloat(val) || 0) : val } : i));
+  function setCustomRow(idx) {
+    setIngredients(prev => prev.map((i, n) => n === idx ? { ...i, name: "", _custom: true } : i));
+    setSaved(false);
+  }
+
+  function updateLbs(idx, val) {
+    setIngredients(prev => prev.map((i, n) => n === idx ? { ...i, lbs: parseFloat(val) || 0 } : i));
     setSaved(false);
   }
 
@@ -1321,35 +1330,27 @@ function RationCard({ ration, onSave, onDelete, isNew, onCancelNew }) {
   }
 
   function addIng() {
-    setIngredients(prev => [...prev, { name: "New ingredient", pct: 0, _rawLbs: 0 }]);
+    setIngredients(prev => [...prev, { name: "", lbs: 0 }]);
     setSaved(false);
   }
 
   const nameOk = rationName.trim().length > 0;
-  const readyToCreate = isNew && nameOk && ddgIngredients.length > 0 && ddgPctOk;
+  const readyToCreate = isNew && nameOk && ddgIngredients.length > 0 && ddgIngredients.every(i => i.name.trim());
 
   const dirty = isNew ||
     rationName.trim() !== ration.name ||
     timeOfDay !== ration.time_of_day ||
-    (ration.mode === "lbs" ? "lbs" : "pct") !== inputMode ||
-    JSON.stringify(stripRaw(ddgIngredients)) !== JSON.stringify(ration.ingredients || []) ||
-    JSON.stringify(stripRaw(noDdgIngredients)) !== JSON.stringify(ration.ingredients_no_ddg || []);
+    JSON.stringify(ddgIngredients.map(cleanIng)) !== JSON.stringify((ration.ingredients || []).map(toLbsIngredient)) ||
+    JSON.stringify(noDdgIngredients.map(cleanIng)) !== JSON.stringify((ration.ingredients_no_ddg || []).map(toLbsIngredient));
 
   async function handleSave() {
     setSaving(true);
-    const cleanDdg = inputMode === "lbs"
-      ? ddgIngredients.map(i => ({ name: i.name, lbs: parseFloat(i._rawLbs) || 0 }))
-      : ddgIngredients.map(({ name, pct }) => ({ name, pct }));
-    const cleanNoDdg = inputMode === "lbs"
-      ? noDdgIngredients.map(i => ({ name: i.name, lbs: parseFloat(i._rawLbs) || 0 }))
-      : noDdgIngredients.map(({ name, pct }) => ({ name, pct }));
-
     const payload = {
       name: rationName.trim() || (isNew ? "Untitled ration" : ration.name),
       time_of_day: timeOfDay,
-      mode: inputMode,
-      ingredients: cleanDdg,
-      ingredients_no_ddg: cleanNoDdg,
+      mode: "lbs",
+      ingredients: ddgIngredients.map(cleanIng),
+      ingredients_no_ddg: noDdgIngredients.map(cleanIng),
     };
 
     try {
@@ -1357,8 +1358,6 @@ function RationCard({ ration, onSave, onDelete, isNew, onCancelNew }) {
         await onSave(payload);
       } else {
         await onSave(ration.id, payload);
-        setDdgIngredients(cleanDdg.map(i => ({ ...i, _rawLbs: i.lbs !== undefined ? i.lbs : Math.round((i.pct || 0) * 1000) / 10 })));
-        setNoDdgIngredients(cleanNoDdg.map(i => ({ ...i, _rawLbs: i.lbs !== undefined ? i.lbs : Math.round((i.pct || 0) * 1000) / 10 })));
         setSaved(true);
         setTimeout(() => setSaved(false), 2000);
       }
@@ -1371,8 +1370,9 @@ function RationCard({ ration, onSave, onDelete, isNew, onCancelNew }) {
     if (!confirmReset) { setConfirmReset(true); return; }
     setResetting(true);
     const field = variant === "ddg" ? "ingredients" : "ingredients_no_ddg";
-    await onSave(ration.id, { [field]: baseIngredients });
-    setIngredients(baseIngredients.map(i => ({ ...i, _rawLbs: i.lbs !== undefined ? i.lbs : Math.round((i.pct || 0) * 1000) / 10 })));
+    const resetLbs = baseIngredients.map(toLbsIngredient);
+    await onSave(ration.id, { [field]: resetLbs, mode: "lbs" });
+    setIngredients(resetLbs);
     setResetting(false);
     setConfirmReset(false);
     setSaved(false);
@@ -1383,6 +1383,8 @@ function RationCard({ ration, onSave, onDelete, isNew, onCancelNew }) {
     setDeleting(true);
     await onDelete(ration.id);
   }
+
+  const totalLbs = Math.round(ingredients.reduce((s, i) => s + (parseFloat(i.lbs) || 0), 0) * 10) / 10;
 
   return (
     <div className={`ration-editor-card${isNew ? " new" : ""}`}>
@@ -1444,15 +1446,6 @@ function RationCard({ ration, onSave, onDelete, isNew, onCancelNew }) {
             <button className={`variant-btn${variant === "no-ddg" ? " active" : ""}`} onClick={() => setVariant("no-ddg")}>No DDG</button>
           </div>
 
-          <div className="input-mode-toggle">
-            <button className={`input-mode-btn${inputMode === "pct" ? " active" : ""}`} onClick={() => setInputMode("pct")}>% Percentage</button>
-            <button className={`input-mode-btn${inputMode === "lbs" ? " active" : ""}`} onClick={() => {
-              setDdgIngredients(prev => prev.map(i => ({ ...i, _rawLbs: i._rawLbs !== undefined ? i._rawLbs : (i.lbs !== undefined ? i.lbs : Math.round(i.pct * 1000) / 10) })));
-              setNoDdgIngredients(prev => prev.map(i => ({ ...i, _rawLbs: i._rawLbs !== undefined ? i._rawLbs : (i.lbs !== undefined ? i.lbs : Math.round(i.pct * 1000) / 10) })));
-              setInputMode("lbs");
-            }}>lbs Direct</button>
-          </div>
-
           {variant === "no-ddg" && noDdgIngredients.length === 0 && ddgIngredients.length > 0 && (
             <button className="ration-add-btn" style={{ marginBottom: 10 }}
               onClick={() => setNoDdgIngredients(ddgIngredients.map(i => ({ ...i })))}>
@@ -1460,70 +1453,52 @@ function RationCard({ ration, onSave, onDelete, isNew, onCancelNew }) {
             </button>
           )}
 
-          <div className="ration-field-row header">
+          <div className="ration-field-row header" style={{ gridTemplateColumns: "1fr 90px 28px" }}>
             <span>Ingredient</span>
-            <span style={{textAlign:"right"}}>{inputMode === "pct" ? "%" : "lbs"}</span>
-            <span style={{textAlign:"right"}}>{inputMode === "pct" ? "lbs" : "%"}</span>
+            <span style={{textAlign:"right"}}>Lbs</span>
             <span></span>
           </div>
 
-          {(() => {
-            const totalRaw = inputMode === "lbs"
-              ? ingredients.reduce((s, i) => s + (parseFloat(i._rawLbs) || 0), 0)
-              : 0;
-            return ingredients.map((ing, idx) => {
-            const pctDisplay = inputMode === "lbs" && totalRaw > 0
-              ? Math.round((parseFloat(ing._rawLbs) || 0) / totalRaw * 1000) / 10
-              : Math.round((ing.pct || 0) * 1000) / 10;
+          {ingredients.map((ing, idx) => {
+            const isCustomRow = ing._custom || (ing.name !== "" && !knownIngredients.includes(ing.name));
             return (
-              <div className="ration-field-row" key={idx}>
-                <input
-                  className="ration-ing-input" style={{ textAlign: "left" }}
-                  value={ing.name}
-                  onChange={e => updateIng(idx, "name", e.target.value)}
-                />
-                {inputMode === "pct" ? (
-                  <>
-                    <input
-                      className="ration-ing-input"
-                      type="number" min="0" max="100" step="0.1"
-                      value={pctDisplay}
-                      onChange={e => updateIng(idx, "pct", parseFloat(e.target.value) / 100 || 0)}
-                    />
-                    <span style={{ textAlign: "right", fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-2)" }}>{pctDisplay}%</span>
-                  </>
+              <div className="ration-field-row" style={{ gridTemplateColumns: "1fr 90px 28px" }} key={idx}>
+                {isCustomRow ? (
+                  <input
+                    className="ration-ing-input" style={{ textAlign: "left" }}
+                    value={ing.name}
+                    autoFocus
+                    placeholder="New ingredient name"
+                    onChange={e => updateName(idx, e.target.value)}
+                  />
                 ) : (
-                  <>
-                    <input
-                      className="ration-ing-input"
-                      type="number" min="0" step="0.1"
-                      value={ing._rawLbs !== undefined ? ing._rawLbs : Math.round((ing.pct || 0) * 1000) / 10}
-                      onChange={e => {
-                        const newLbs = parseFloat(e.target.value) || 0;
-                        updateIng(idx, "_rawLbs", newLbs);
-                      }}
-                    />
-                    <span style={{ textAlign: "right", fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-2)" }}>{pctDisplay}%</span>
-                  </>
+                  <select
+                    className="ration-ing-input" style={{ textAlign: "left" }}
+                    value={ing.name}
+                    onChange={e => {
+                      if (e.target.value === "__custom__") setCustomRow(idx);
+                      else updateName(idx, e.target.value);
+                    }}
+                  >
+                    <option value="" disabled>Select ingredient…</option>
+                    {knownIngredients.map(name => <option key={name} value={name}>{name}</option>)}
+                    <option value="__custom__">+ Add new ingredient…</option>
+                  </select>
                 )}
+                <input
+                  className="ration-ing-input"
+                  type="number" min="0" step="0.1"
+                  value={ing.lbs}
+                  onChange={e => updateLbs(idx, e.target.value)}
+                />
                 <button className="ration-remove-btn" onClick={() => removeIng(idx)}>×</button>
               </div>
             );
-            });
-          })()}
+          })}
 
           <button className="ration-add-btn" onClick={addIng}>+ Add ingredient</button>
 
-          {inputMode === "pct" && (
-            <div className={`pct-warning ${activePctOk ? "ok" : "warn"}`}>
-              {activePctOk ? "✓ Percentages sum to 100%" : `⚠ ${variant === "ddg" ? "DDG" : "No DDG"} percentages sum to ${Math.round(pctTotal(ingredients) * 100)}% — must equal 100%`}
-            </div>
-          )}
-          {inputMode === "lbs" && (
-            <div className="pct-warning ok">
-              Exact lbs stored — feeder mixes these exact amounts, no pen total needed
-            </div>
-          )}
+          <div className="pct-warning ok">Total: {totalLbs} lbs · exact amounts, no pen total needed</div>
 
           {isNew ? (
             <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
@@ -1535,7 +1510,7 @@ function RationCard({ ration, onSave, onDelete, isNew, onCancelNew }) {
           ) : (
             <>
               {dirty && (
-                <button className="save-btn" onClick={handleSave} disabled={saving || !ddgPctOk || !noDdgPctOk}>
+                <button className="save-btn" onClick={handleSave} disabled={saving}>
                   {saving ? "Saving…" : "Save ration"}
                 </button>
               )}
@@ -1573,6 +1548,18 @@ function RationCard({ ration, onSave, onDelete, isNew, onCancelNew }) {
 function AdminView({ pens, rations, events, penSchedules, onSavePen, onSaveSchedule, onSaveRation, onCreateRation, onDeleteRation }) {
   const [tab, setTab] = useState("pens");
   const [creatingNew, setCreatingNew] = useState(false);
+
+  // Known ingredient names across every ration (DDG, No-DDG, and base formulas) —
+  // powers the ingredient dropdown so admins pick from what's already in use.
+  const knownIngredients = useMemo(() => {
+    const set = new Set();
+    rations.forEach(r => {
+      [r.ingredients, r.ingredients_no_ddg, r.base_ingredients, r.base_ingredients_no_ddg].forEach(list => {
+        (list || []).forEach(i => { if (i?.name) set.add(i.name); });
+      });
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [rations]);
   const doneCount = events.filter(e => e.status === "done").length;
   const pendingCount = events.length - doneCount;
   const doneEvents = [...events].filter(e => e.status === "done")
@@ -1638,15 +1625,16 @@ function AdminView({ pens, rations, events, penSchedules, onSavePen, onSaveSched
 
           {creatingNew && (
             <RationCard
-              ration={{ name: "", time_of_day: "AM", mode: "pct", ingredients: [], ingredients_no_ddg: [] }}
+              ration={{ name: "", time_of_day: "AM", mode: "lbs", ingredients: [], ingredients_no_ddg: [] }}
               isNew
+              knownIngredients={knownIngredients}
               onSave={async payload => { await onCreateRation(payload); setCreatingNew(false); }}
               onCancelNew={() => setCreatingNew(false)}
             />
           )}
 
           {rations.map(r => (
-            <RationCard key={r.id} ration={r} onSave={onSaveRation} onDelete={onDeleteRation} />
+            <RationCard key={r.id} ration={r} onSave={onSaveRation} onDelete={onDeleteRation} knownIngredients={knownIngredients} />
           ))}
 
           {!creatingNew && (
