@@ -67,6 +67,15 @@ const db = {
       method: "PATCH",
       body: JSON.stringify(updates),
     }),
+  createRation: (payload) =>
+    sbFetch("/rations", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  deleteRation: (id) =>
+    sbFetch(`/rations?id=eq.${id}`, {
+      method: "DELETE",
+    }),
   getTodaySchedule: () => {
     const today = new Date().toLocaleDateString("en-CA");
     return sbFetch(`/pen_schedule?select=*&date=eq.${today}`);
@@ -445,6 +454,40 @@ const css = `
   .pct-warning { font-size: 10px; font-family: var(--mono); margin-top: 4px; }
   .pct-warning.ok { color: var(--accent); }
   .pct-warning.warn { color: var(--warn); }
+
+  /* ── RATION CARD (merged DDG / No-DDG) ── */
+  .ration-editor-card.new { border: 1px dashed var(--accent); }
+
+  .ration-time-tag {
+    display: inline-block; font-family: var(--mono); font-size: 10px; font-weight: 500;
+    padding: 3px 8px; border-radius: 5px; flex-shrink: 0;
+  }
+  .ration-time-tag.am { background: var(--fp-light); color: var(--fp); }
+  .ration-time-tag.pm { background: var(--cp-light); color: var(--cp); }
+
+  .ration-delete-btn {
+    background: none; border: none; cursor: pointer; color: var(--text-3);
+    font-size: 14px; padding: 4px; line-height: 1; transition: color 0.15s; flex-shrink: 0;
+  }
+  .ration-delete-btn:hover:not(:disabled) { color: var(--danger); }
+  .ration-delete-btn:disabled { opacity: 0.5; cursor: default; }
+
+  .variant-toggle { display: flex; gap: 4px; margin: 10px 0; }
+  .variant-btn {
+    flex: 1; padding: 6px 8px; font-size: 11px; font-family: var(--mono); font-weight: 500;
+    border-radius: 6px; border: 1px solid var(--border); background: none; color: var(--text-3);
+    cursor: pointer; transition: all 0.15s;
+  }
+  .variant-btn.active { background: var(--accent-light); color: var(--accent-text); border-color: var(--accent-light); }
+
+  .new-ration-btn {
+    width: 100%; margin-top: 4px; padding: 12px;
+    background: var(--accent-light); color: var(--accent-text);
+    border: 1px dashed var(--accent); border-radius: 10px;
+    font-family: var(--mono); font-size: 12px; font-weight: 500;
+    cursor: pointer; transition: all 0.15s;
+  }
+  .new-ration-btn:hover { background: var(--accent); color: white; border-style: solid; }
 
   /* ── MIXER MODE ── */
   .mixer {
@@ -1219,38 +1262,56 @@ function PenCard({ pen, rations, schedule, onSave, onSaveSchedule }) {
 // ── ADMIN VIEW ────────────────────────────────────────────────────────────────
 
 
-function RationEditorCard({ ration, variant, onSave, onReset }) {
-  const [open, setOpen] = useState(false);
-  const [ingredients, setIngredients] = useState(
-    (variant === "ddg" ? ration.ingredients : ration.ingredients_no_ddg).map(i => ({ ...i }))
+function RationCard({ ration, onSave, onDelete, isNew, onCancelNew }) {
+  const [open, setOpen] = useState(!!isNew);
+  const [variant, setVariant] = useState("ddg"); // "ddg" | "no-ddg"
+  const [rationName, setRationName] = useState(ration.name || "");
+  const [timeOfDay, setTimeOfDay] = useState(ration.time_of_day || "AM");
+  const [inputMode, setInputMode] = useState(ration.mode === "lbs" ? "lbs" : "pct");
+  const [ddgIngredients, setDdgIngredients] = useState(
+    (ration.ingredients || []).map(i => ({ ...i, _rawLbs: i.lbs !== undefined ? i.lbs : Math.round((i.pct || 0) * 1000) / 10 }))
+  );
+  const [noDdgIngredients, setNoDdgIngredients] = useState(
+    (ration.ingredients_no_ddg || []).map(i => ({ ...i, _rawLbs: i.lbs !== undefined ? i.lbs : Math.round((i.pct || 0) * 1000) / 10 }))
   );
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
-  const [inputMode, setInputMode] = useState(ration.mode === "lbs" ? "lbs" : "pct");
-  const [rationName, setRationName] = useState(ration.name);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
-  // Sync name and mode if parent rations array updates
+  // Sync from parent when this (existing) ration changes externally
   useEffect(() => {
+    if (isNew) return;
     setRationName(ration.name);
-    const newMode = ration.mode === "lbs" ? "lbs" : "pct";
-    setInputMode(newMode);
-    if (newMode === "lbs") {
-      const list = variant === "ddg" ? ration.ingredients : ration.ingredients_no_ddg;
-      setIngredients((list || []).map(i => ({ ...i, _rawLbs: i.lbs || 0 })));
-    }
-  }, [ration.name, ration.mode]);
+    setTimeOfDay(ration.time_of_day);
+    setInputMode(ration.mode === "lbs" ? "lbs" : "pct");
+    setDdgIngredients((ration.ingredients || []).map(i => ({ ...i, _rawLbs: i.lbs !== undefined ? i.lbs : Math.round((i.pct || 0) * 1000) / 10 })));
+    setNoDdgIngredients((ration.ingredients_no_ddg || []).map(i => ({ ...i, _rawLbs: i.lbs !== undefined ? i.lbs : Math.round((i.pct || 0) * 1000) / 10 })));
+  }, [ration.id, ration.name, ration.mode, ration.time_of_day]);
 
+  const ingredients = variant === "ddg" ? ddgIngredients : noDdgIngredients;
+  const setIngredients = variant === "ddg" ? setDdgIngredients : setNoDdgIngredients;
   const baseIngredients = variant === "ddg" ? ration.base_ingredients : ration.base_ingredients_no_ddg;
-  const hasBase = !!baseIngredients;
-  const isModified = hasBase && JSON.stringify(ingredients) !== JSON.stringify(baseIngredients);
+  const hasBase = !isNew && !!baseIngredients;
 
-  const totalPct = Math.round(ingredients.reduce((s, i) => s + (parseFloat(i.pct) || 0), 0) * 100) / 100;
-  const pctOk = inputMode === "lbs" || Math.abs(totalPct - 1) < 0.005;
+  function stripRaw(list) { return list.map(({ _rawLbs, ...rest }) => rest); }
+
+  const isModified = !isNew && (
+    (!!ration.base_ingredients && JSON.stringify(stripRaw(ddgIngredients)) !== JSON.stringify(ration.base_ingredients)) ||
+    (!!ration.base_ingredients_no_ddg && JSON.stringify(stripRaw(noDdgIngredients)) !== JSON.stringify(ration.base_ingredients_no_ddg))
+  );
+
+  function pctTotal(list) {
+    return Math.round(list.reduce((s, i) => s + (parseFloat(i.pct) || 0), 0) * 100) / 100;
+  }
+  const ddgPctOk = inputMode === "lbs" || ddgIngredients.length === 0 || Math.abs(pctTotal(ddgIngredients) - 1) < 0.005;
+  const noDdgPctOk = inputMode === "lbs" || noDdgIngredients.length === 0 || Math.abs(pctTotal(noDdgIngredients) - 1) < 0.005;
+  const activePctOk = variant === "ddg" ? ddgPctOk : noDdgPctOk;
 
   function updateIng(idx, field, val) {
-    setIngredients(prev => prev.map((i, n) => n === idx ? { ...i, [field]: field === "pct" ? parseFloat(val) || 0 : val } : i));
+    setIngredients(prev => prev.map((i, n) => n === idx ? { ...i, [field]: field === "pct" ? (parseFloat(val) || 0) : val } : i));
     setSaved(false);
   }
 
@@ -1260,91 +1321,144 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
   }
 
   function addIng() {
-    setIngredients(prev => [...prev, { name: "New ingredient", pct: 0 }]);
+    setIngredients(prev => [...prev, { name: "New ingredient", pct: 0, _rawLbs: 0 }]);
     setSaved(false);
   }
 
+  const nameOk = rationName.trim().length > 0;
+  const readyToCreate = isNew && nameOk && ddgIngredients.length > 0 && ddgPctOk;
+
+  const dirty = isNew ||
+    rationName.trim() !== ration.name ||
+    timeOfDay !== ration.time_of_day ||
+    (ration.mode === "lbs" ? "lbs" : "pct") !== inputMode ||
+    JSON.stringify(stripRaw(ddgIngredients)) !== JSON.stringify(ration.ingredients || []) ||
+    JSON.stringify(stripRaw(noDdgIngredients)) !== JSON.stringify(ration.ingredients_no_ddg || []);
+
   async function handleSave() {
     setSaving(true);
-    const field = variant === "ddg" ? "ingredients" : "ingredients_no_ddg";
+    const cleanDdg = inputMode === "lbs"
+      ? ddgIngredients.map(i => ({ name: i.name, lbs: parseFloat(i._rawLbs) || 0 }))
+      : ddgIngredients.map(({ name, pct }) => ({ name, pct }));
+    const cleanNoDdg = inputMode === "lbs"
+      ? noDdgIngredients.map(i => ({ name: i.name, lbs: parseFloat(i._rawLbs) || 0 }))
+      : noDdgIngredients.map(({ name, pct }) => ({ name, pct }));
 
-    let finalIngredients;
-    if (inputMode === "lbs") {
-      // lbs Direct: store exact lbs — no percentage calculation
-      finalIngredients = ingredients.map(i => ({
-        name: i.name,
-        lbs: parseFloat(i._rawLbs) || 0,
-      }));
-    } else {
-      // pct mode: store clean percentages only
-      finalIngredients = ingredients.map(({ name, pct }) => ({ name, pct }));
-    }
-
-    const updates = {
-      [field]: finalIngredients,
+    const payload = {
+      name: rationName.trim() || (isNew ? "Untitled ration" : ration.name),
+      time_of_day: timeOfDay,
       mode: inputMode,
-      name: rationName.trim() || ration.name,
+      ingredients: cleanDdg,
+      ingredients_no_ddg: cleanNoDdg,
     };
-    await onSave(ration.id, updates);
-    setIngredients(finalIngredients);
-    setSaving(false);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+
+    try {
+      if (isNew) {
+        await onSave(payload);
+      } else {
+        await onSave(ration.id, payload);
+        setDdgIngredients(cleanDdg.map(i => ({ ...i, _rawLbs: i.lbs !== undefined ? i.lbs : Math.round((i.pct || 0) * 1000) / 10 })));
+        setNoDdgIngredients(cleanNoDdg.map(i => ({ ...i, _rawLbs: i.lbs !== undefined ? i.lbs : Math.round((i.pct || 0) * 1000) / 10 })));
+        setSaved(true);
+        setTimeout(() => setSaved(false), 2000);
+      }
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function handleReset() {
     if (!confirmReset) { setConfirmReset(true); return; }
     setResetting(true);
     const field = variant === "ddg" ? "ingredients" : "ingredients_no_ddg";
-    await onSave(ration.id, {
-      [field]: baseIngredients,
-    });
-    setIngredients(baseIngredients.map(i => ({ ...i })));
+    await onSave(ration.id, { [field]: baseIngredients });
+    setIngredients(baseIngredients.map(i => ({ ...i, _rawLbs: i.lbs !== undefined ? i.lbs : Math.round((i.pct || 0) * 1000) / 10 })));
     setResetting(false);
     setConfirmReset(false);
     setSaved(false);
   }
 
-  const dirty = JSON.stringify(ingredients) !== JSON.stringify(
-    (variant === "ddg" ? ration.ingredients : ration.ingredients_no_ddg)
-  ) || rationName.trim() !== ration.name;
+  async function handleDelete() {
+    if (!confirmDelete) { setConfirmDelete(true); return; }
+    setDeleting(true);
+    await onDelete(ration.id);
+  }
 
   return (
-    <div className="ration-editor-card">
-      <div className="ration-editor-header" onClick={() => { setOpen(o => !o); setConfirmReset(false); }}>
-        <div>
-          <div className="ration-editor-title">
-            {variant === "ddg" ? rationName : `${rationName} · No DDG`}
-            {isModified && <span style={{ marginLeft: 8, fontSize: 10, fontFamily: "var(--mono)", color: "var(--warn)", background: "var(--warn-light)", padding: "2px 6px", borderRadius: 4 }}>modified</span>}
+    <div className={`ration-editor-card${isNew ? " new" : ""}`}>
+      <div
+        className="ration-editor-header"
+        style={isNew ? { cursor: "default" } : undefined}
+        onClick={() => { if (isNew) return; setOpen(o => !o); setConfirmReset(false); setConfirmDelete(false); }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {!isNew && <span className={`ration-time-tag ${(timeOfDay || "").toLowerCase()}`}>{timeOfDay}</span>}
+          <div>
+            <div className="ration-editor-title">
+              {isNew ? "New ration" : rationName}
+              {isModified && <span style={{ marginLeft: 8, fontSize: 10, fontFamily: "var(--mono)", color: "var(--warn)", background: "var(--warn-light)", padding: "2px 6px", borderRadius: 4 }}>modified</span>}
+            </div>
+            {!isNew && (
+              <div className="ration-editor-meta">{ddgIngredients.length} DDG · {noDdgIngredients.length} No DDG</div>
+            )}
           </div>
-          <div className="ration-editor-meta">{ingredients.length} ingredients</div>
         </div>
-        <span className={`ration-editor-chevron${open ? " open" : ""}`}>▼</span>
+        {isNew ? (
+          <button className="ration-delete-btn" onClick={onCancelNew}>✕</button>
+        ) : (
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <button
+              className="ration-delete-btn"
+              onClick={e => { e.stopPropagation(); handleDelete(); }}
+              disabled={deleting}
+              title="Delete ration"
+            >
+              {confirmDelete ? "⚠" : "🗑"}
+            </button>
+            <span className={`ration-editor-chevron${open ? " open" : ""}`}>▼</span>
+          </div>
+        )}
       </div>
 
-      {open && (
+      {(open || isNew) && (
         <div className="ration-editor-body">
-          {variant === "ddg" && (
-            <div className="field-row" style={{ marginBottom: 10 }}>
-              <span className="field-label">Ration name</span>
-              <input
-                className="field-input"
-                value={rationName}
-                onChange={e => { setRationName(e.target.value); setSaved(false); }}
-                placeholder="e.g. Starter AM"
-              />
-            </div>
-          )}
+          <div className="field-row" style={{ marginTop: 10 }}>
+            <span className="field-label">Ration name</span>
+            <input
+              className="field-input"
+              value={rationName}
+              onChange={e => { setRationName(e.target.value); setSaved(false); }}
+              placeholder="e.g. Starter"
+            />
+          </div>
+          <div className="field-row">
+            <span className="field-label">Feed time</span>
+            <select className="field-select" value={timeOfDay} onChange={e => { setTimeOfDay(e.target.value); setSaved(false); }}>
+              <option value="AM">AM</option>
+              <option value="PM">PM</option>
+            </select>
+          </div>
+
+          <div className="variant-toggle">
+            <button className={`variant-btn${variant === "ddg" ? " active" : ""}`} onClick={() => setVariant("ddg")}>With DDG</button>
+            <button className={`variant-btn${variant === "no-ddg" ? " active" : ""}`} onClick={() => setVariant("no-ddg")}>No DDG</button>
+          </div>
+
           <div className="input-mode-toggle">
             <button className={`input-mode-btn${inputMode === "pct" ? " active" : ""}`} onClick={() => setInputMode("pct")}>% Percentage</button>
             <button className={`input-mode-btn${inputMode === "lbs" ? " active" : ""}`} onClick={() => {
-              setIngredients(prev => prev.map(i => ({
-                ...i,
-                _rawLbs: i.lbs !== undefined ? i.lbs : Math.round(i.pct * 1000) / 10
-              })));
+              setDdgIngredients(prev => prev.map(i => ({ ...i, _rawLbs: i._rawLbs !== undefined ? i._rawLbs : (i.lbs !== undefined ? i.lbs : Math.round(i.pct * 1000) / 10) })));
+              setNoDdgIngredients(prev => prev.map(i => ({ ...i, _rawLbs: i._rawLbs !== undefined ? i._rawLbs : (i.lbs !== undefined ? i.lbs : Math.round(i.pct * 1000) / 10) })));
               setInputMode("lbs");
             }}>lbs Direct</button>
           </div>
+
+          {variant === "no-ddg" && noDdgIngredients.length === 0 && ddgIngredients.length > 0 && (
+            <button className="ration-add-btn" style={{ marginBottom: 10 }}
+              onClick={() => setNoDdgIngredients(ddgIngredients.map(i => ({ ...i })))}>
+              ⧉ Copy ingredients from "With DDG"
+            </button>
+          )}
 
           <div className="ration-field-row header">
             <span>Ingredient</span>
@@ -1360,7 +1474,7 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
             return ingredients.map((ing, idx) => {
             const pctDisplay = inputMode === "lbs" && totalRaw > 0
               ? Math.round((parseFloat(ing._rawLbs) || 0) / totalRaw * 1000) / 10
-              : Math.round(ing.pct * 1000) / 10;
+              : Math.round((ing.pct || 0) * 1000) / 10;
             return (
               <div className="ration-field-row" key={idx}>
                 <input
@@ -1383,7 +1497,7 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
                     <input
                       className="ration-ing-input"
                       type="number" min="0" step="0.1"
-                      value={ing._rawLbs !== undefined ? ing._rawLbs : Math.round(ing.pct * 1000) / 10}
+                      value={ing._rawLbs !== undefined ? ing._rawLbs : Math.round((ing.pct || 0) * 1000) / 10}
                       onChange={e => {
                         const newLbs = parseFloat(e.target.value) || 0;
                         updateIng(idx, "_rawLbs", newLbs);
@@ -1401,8 +1515,8 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
           <button className="ration-add-btn" onClick={addIng}>+ Add ingredient</button>
 
           {inputMode === "pct" && (
-            <div className={`pct-warning ${pctOk ? "ok" : "warn"}`}>
-              {pctOk ? "✓ Percentages sum to 100%" : `⚠ Percentages sum to ${Math.round(totalPct * 100)}% — must equal 100%`}
+            <div className={`pct-warning ${activePctOk ? "ok" : "warn"}`}>
+              {activePctOk ? "✓ Percentages sum to 100%" : `⚠ ${variant === "ddg" ? "DDG" : "No DDG"} percentages sum to ${Math.round(pctTotal(ingredients) * 100)}% — must equal 100%`}
             </div>
           )}
           {inputMode === "lbs" && (
@@ -1411,27 +1525,44 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
             </div>
           )}
 
-          {dirty && (
-            <button className="save-btn" onClick={handleSave} disabled={saving || !pctOk}>
-              {saving ? "Saving…" : "Save ration"}
-            </button>
-          )}
-          {saved && <div className="saved-badge">✓ Saved</div>}
+          {isNew ? (
+            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+              <button className="modal-cancel" style={{ flex: 1 }} onClick={onCancelNew}>Cancel</button>
+              <button className="save-btn" style={{ flex: 2, marginTop: 0 }} onClick={handleSave} disabled={saving || !readyToCreate}>
+                {saving ? "Creating…" : "Create ration"}
+              </button>
+            </div>
+          ) : (
+            <>
+              {dirty && (
+                <button className="save-btn" onClick={handleSave} disabled={saving || !ddgPctOk || !noDdgPctOk}>
+                  {saving ? "Saving…" : "Save ration"}
+                </button>
+              )}
+              {saved && <div className="saved-badge">✓ Saved</div>}
 
-          {hasBase && (
-            <button
-              onClick={handleReset}
-              disabled={resetting}
-              style={{
-                width: "100%", marginTop: 8, padding: "8px",
-                background: "none", border: `1px solid ${confirmReset ? "#8B1A1A" : "var(--border)"}`,
-                borderRadius: 8, fontFamily: "var(--mono)", fontSize: 12,
-                color: confirmReset ? "#8B1A1A" : "var(--text-3)",
-                cursor: "pointer", transition: "all 0.15s",
-              }}
-            >
-              {resetting ? "Resetting…" : confirmReset ? "⚠ Tap again to confirm reset to base ration" : "↩ Reset to base ration"}
-            </button>
+              {hasBase && (
+                <button
+                  onClick={handleReset}
+                  disabled={resetting}
+                  style={{
+                    width: "100%", marginTop: 8, padding: "8px",
+                    background: "none", border: `1px solid ${confirmReset ? "#8B1A1A" : "var(--border)"}`,
+                    borderRadius: 8, fontFamily: "var(--mono)", fontSize: 12,
+                    color: confirmReset ? "#8B1A1A" : "var(--text-3)",
+                    cursor: "pointer", transition: "all 0.15s",
+                  }}
+                >
+                  {resetting ? "Resetting…" : confirmReset ? `⚠ Tap again to confirm reset (${variant === "ddg" ? "DDG" : "No DDG"})` : `↩ Reset ${variant === "ddg" ? "DDG" : "No DDG"} to base`}
+                </button>
+              )}
+
+              {confirmDelete && (
+                <div style={{ marginTop: 8, fontSize: 11, fontFamily: "var(--mono)", color: "var(--danger)", textAlign: "center" }}>
+                  Tap 🗑 again to permanently delete this ration
+                </div>
+              )}
+            </>
           )}
         </div>
       )}
@@ -1439,8 +1570,9 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
   );
 }
 
-function AdminView({ pens, rations, events, penSchedules, onSavePen, onSaveSchedule, onSaveRation }) {
+function AdminView({ pens, rations, events, penSchedules, onSavePen, onSaveSchedule, onSaveRation, onCreateRation, onDeleteRation }) {
   const [tab, setTab] = useState("pens");
+  const [creatingNew, setCreatingNew] = useState(false);
   const doneCount = events.filter(e => e.status === "done").length;
   const pendingCount = events.length - doneCount;
   const doneEvents = [...events].filter(e => e.status === "done")
@@ -1503,12 +1635,23 @@ function AdminView({ pens, rations, events, penSchedules, onSavePen, onSaveSched
       {tab === "rations" && (
         <div className="admin-section">
           <div className="admin-section-title">Ration formulas</div>
+
+          {creatingNew && (
+            <RationCard
+              ration={{ name: "", time_of_day: "AM", mode: "pct", ingredients: [], ingredients_no_ddg: [] }}
+              isNew
+              onSave={async payload => { await onCreateRation(payload); setCreatingNew(false); }}
+              onCancelNew={() => setCreatingNew(false)}
+            />
+          )}
+
           {rations.map(r => (
-            <div key={r.id}>
-              <RationEditorCard ration={r} variant="ddg" onSave={onSaveRation} />
-              <RationEditorCard ration={r} variant="no-ddg" onSave={onSaveRation} />
-            </div>
+            <RationCard key={r.id} ration={r} onSave={onSaveRation} onDelete={onDeleteRation} />
           ))}
+
+          {!creatingNew && (
+            <button className="new-ration-btn" onClick={() => setCreatingNew(true)}>+ New ration</button>
+          )}
         </div>
       )}
     </div>
@@ -1691,6 +1834,28 @@ export default function App() {
     }
   }, []);
 
+  const createRation = useCallback(async (payload) => {
+    try {
+      await db.createRation(payload);
+      const fresh = await db.getRations();
+      if (fresh) setRations(fresh);
+    } catch (err) {
+      setError("Failed to create ration. Try again.");
+      setTimeout(() => setError(null), 3000);
+      throw err;
+    }
+  }, []);
+
+  const deleteRation = useCallback(async (rationId) => {
+    try {
+      await db.deleteRation(rationId);
+      setRations(prev => prev.filter(r => r.id !== rationId));
+    } catch (err) {
+      setError("Failed to delete ration. Try again.");
+      setTimeout(() => setError(null), 3000);
+    }
+  }, []);
+
   const saveSchedule = useCallback(async (penId, rows) => {
     try {
       await db.upsertPenSchedule(rows);
@@ -1752,7 +1917,7 @@ export default function App() {
         {role === "feeder" ? (
           <FeederView pens={pens} rations={rations} events={events} feeders={feeders} todaySchedule={todaySchedule} onConfirm={confirmEvent} />
         ) : (
-          <AdminView pens={pens} rations={rations} events={events} penSchedules={penSchedules} onSavePen={savePen} onSaveSchedule={saveSchedule} onSaveRation={saveRation} />
+          <AdminView pens={pens} rations={rations} events={events} penSchedules={penSchedules} onSavePen={savePen} onSaveSchedule={saveSchedule} onSaveRation={saveRation} onCreateRation={createRation} onDeleteRation={deleteRation} />
         )}
       </div>
     </>
