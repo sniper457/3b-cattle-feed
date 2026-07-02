@@ -52,16 +52,21 @@ const db = {
   // Schedule: upsert pen config for specific dates
   getPenSchedule: (penId) =>
     sbFetch(`/pen_schedule?pen_id=eq.${penId}&date=gte.${new Date().toISOString().split("T")[0]}&order=date`),
+  // Conflict target includes time_of_day so AM and PM schedules for the same
+  // pen+date are separate rows instead of overwriting each other. Requires the
+  // pen_schedule table to have a unique constraint on (pen_id, date, time_of_day).
   upsertPenSchedule: (rows) =>
-    sbFetch("/pen_schedule?on_conflict=pen_id,date", {
+    sbFetch("/pen_schedule?on_conflict=pen_id,date,time_of_day", {
       method: "POST",
       headers: { "Prefer": "resolution=merge-duplicates,return=representation" },
       body: JSON.stringify(rows),
     }),
-  deletePenSchedule: (penId, dates) =>
-    sbFetch(`/pen_schedule?pen_id=eq.${penId}&date=in.(${dates.join(",")})`, {
+  deletePenSchedule: (penId, dates, timeOfDay) => {
+    const todFilter = timeOfDay ? `&time_of_day=eq.${timeOfDay}` : "";
+    return sbFetch(`/pen_schedule?pen_id=eq.${penId}&date=in.(${dates.join(",")})${todFilter}`, {
       method: "DELETE",
-    }),
+    });
+  },
   updateRation: (id, updates) =>
     sbFetch(`/rations?id=eq.${id}`, {
       method: "PATCH",
@@ -113,22 +118,40 @@ function subscribeRealtime(table, onChange) {
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
 
+function sumIngredientAmount(list) {
+  return (list || []).reduce((s, i) => s + (i.lbs ?? i.pct ?? 0), 0);
+}
+
+// Choose the DDG or No-DDG list for a lbs-mode ration. If the preferred variant
+// was never filled in (sums to 0) but the other variant has real amounts, fall
+// back to that one — guards against a ration where only one variant got edited
+// while a pen/schedule's "Use DDG" flag points at the empty one.
+function pickRationList(ration, preferDdg) {
+  const primary = preferDdg ? ration.ingredients : ration.ingredients_no_ddg;
+  const fallback = preferDdg ? ration.ingredients_no_ddg : ration.ingredients;
+  if (sumIngredientAmount(primary) === 0 && sumIngredientAmount(fallback) > 0) {
+    return { list: fallback || [], usedDdg: !preferDdg };
+  }
+  return { list: primary || [], usedDdg: preferDdg };
+}
+
 function getTotalLbs(pen, ration) {
   if (ration?.mode === "lbs") {
     // lbs Direct: total is sum of stored ingredient lbs
-    const list = pen.use_ddg ? ration.ingredients : ration.ingredients_no_ddg;
-    return Math.round((list || []).reduce((s, i) => s + (i.lbs || 0), 0) * 10) / 10;
+    const { list } = pickRationList(ration, pen.use_ddg);
+    return Math.round(sumIngredientAmount(list) * 10) / 10;
   }
   return pen.total_lbs || 0;
 }
 
 function getIngredients(ration, useDdg, totalLbs) {
-  const list = useDdg ? ration.ingredients : ration.ingredients_no_ddg;
   if (ration.mode === "lbs") {
     // lbs Direct: stored lbs are the exact amounts — no calculation needed
-    return list.map(i => ({ ...i, lbs: i.lbs || 0 }));
+    const { list } = pickRationList(ration, useDdg);
+    return (list || []).map(i => ({ ...i, lbs: i.lbs || 0 }));
   }
   // pct mode: calculate from pen total lbs × percentage
+  const list = useDdg ? ration.ingredients : ration.ingredients_no_ddg;
   return list.map(i => ({ ...i, lbs: Math.round(i.pct * totalLbs * 10) / 10 }));
 }
 
@@ -770,9 +793,13 @@ function CalendarModal({ pen, rations, existingSchedule, timeOfDay, onSave, onCl
   const [useDdg, setUseDdg] = useState(pen.use_ddg);
   const [saving, setSaving] = useState(false);
 
-  // Pre-mark dates that already have a schedule
+  // Pre-mark dates that already have a schedule for this AM/PM period.
+  // Prefer the schedule row's own time_of_day (set at scheduling time); fall back
+  // to the linked ration's time_of_day for older rows saved before that column existed.
   const scheduledMap = {};
-  (existingSchedule || []).filter(s => s.pen_id === pen.id && rations.find(r => r.id === s.ration_id)?.time_of_day === timeOfDay).forEach(s => { scheduledMap[s.date] = s; });
+  (existingSchedule || [])
+    .filter(s => s.pen_id === pen.id && (s.time_of_day || rations.find(r => r.id === s.ration_id)?.time_of_day) === timeOfDay)
+    .forEach(s => { scheduledMap[s.date] = s; });
 
   const monthName = new Date(viewYear, viewMonth).toLocaleDateString("en-US", { month: "long", year: "numeric" });
   const daysInMonth = getDaysInMonth(viewYear, viewMonth);
@@ -800,7 +827,7 @@ function CalendarModal({ pen, rations, existingSchedule, timeOfDay, onSave, onCl
     if (selectedDates.size === 0) return;
     setSaving(true);
     const rows = [...selectedDates].map(date => ({
-      pen_id: pen.id, date, ration_id: rationId, use_ddg: useDdg,
+      pen_id: pen.id, date, ration_id: rationId, use_ddg: useDdg, time_of_day: timeOfDay,
     }));
     await onSave(pen.id, rows);
     setSaving(false);
@@ -1091,7 +1118,8 @@ function FeederView({ pens, rations, events, feeders, todaySchedule, onConfirm }
     const pen = pens.find(p => p.id === s.pen_id);
     if (!pen || !pen.is_active) return false;
     const ration = rations.find(r => r.id === s.ration_id);
-    return ration?.time_of_day === feedPeriod;
+    const period = s.time_of_day || ration?.time_of_day;
+    return period === feedPeriod;
   });
 
   // Match schedule entries to feed events for confirmation state
@@ -1179,8 +1207,8 @@ function PenCard({ pen, rations, schedule, onSave, onSaveSchedule }) {
     setTimeout(() => setSaved(false), 2000);
   }
 
-  const amUpcoming = (schedule || []).filter(s => rations.find(r => r.id === s.ration_id)?.time_of_day === "AM").length;
-  const pmUpcoming = (schedule || []).filter(s => rations.find(r => r.id === s.ration_id)?.time_of_day === "PM").length;
+  const amUpcoming = (schedule || []).filter(s => (s.time_of_day || rations.find(r => r.id === s.ration_id)?.time_of_day) === "AM").length;
+  const pmUpcoming = (schedule || []).filter(s => (s.time_of_day || rations.find(r => r.id === s.ration_id)?.time_of_day) === "PM").length;
 
   return (
     <>
@@ -1849,8 +1877,10 @@ export default function App() {
       await db.upsertPenSchedule(rows);
       setPenSchedules(prev => {
         const existing = prev[penId] || [];
-        const newDates = new Set(rows.map(r => r.date));
-        const merged = existing.filter(r => !newDates.has(r.date)).concat(rows);
+        // Key on date + time_of_day, not just date — AM and PM are separate
+        // schedule slots for the same day and must not evict each other.
+        const newKeys = new Set(rows.map(r => `${r.date}|${r.time_of_day}`));
+        const merged = existing.filter(r => !newKeys.has(`${r.date}|${r.time_of_day}`)).concat(rows);
         return { ...prev, [penId]: merged.sort((a,b) => a.date.localeCompare(b.date)) };
       });
     } catch (err) {
