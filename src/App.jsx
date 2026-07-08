@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback } from "react";
 
 // ── SUPABASE ──────────────────────────────────────────────────────────────────
 
@@ -52,34 +52,20 @@ const db = {
   // Schedule: upsert pen config for specific dates
   getPenSchedule: (penId) =>
     sbFetch(`/pen_schedule?pen_id=eq.${penId}&date=gte.${new Date().toISOString().split("T")[0]}&order=date`),
-  // Conflict target includes time_of_day so AM and PM schedules for the same
-  // pen+date are separate rows instead of overwriting each other. Requires the
-  // pen_schedule table to have a unique constraint on (pen_id, date, time_of_day).
   upsertPenSchedule: (rows) =>
-    sbFetch("/pen_schedule?on_conflict=pen_id,date,time_of_day", {
+    sbFetch("/pen_schedule?on_conflict=pen_id,date", {
       method: "POST",
       headers: { "Prefer": "resolution=merge-duplicates,return=representation" },
       body: JSON.stringify(rows),
     }),
-  deletePenSchedule: (penId, dates, timeOfDay) => {
-    const todFilter = timeOfDay ? `&time_of_day=eq.${timeOfDay}` : "";
-    return sbFetch(`/pen_schedule?pen_id=eq.${penId}&date=in.(${dates.join(",")})${todFilter}`, {
+  deletePenSchedule: (penId, dates) =>
+    sbFetch(`/pen_schedule?pen_id=eq.${penId}&date=in.(${dates.join(",")})`, {
       method: "DELETE",
-    });
-  },
+    }),
   updateRation: (id, updates) =>
     sbFetch(`/rations?id=eq.${id}`, {
       method: "PATCH",
       body: JSON.stringify(updates),
-    }),
-  createRation: (payload) =>
-    sbFetch("/rations", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    }),
-  deleteRation: (id) =>
-    sbFetch(`/rations?id=eq.${id}`, {
-      method: "DELETE",
     }),
   getTodaySchedule: () => {
     const today = new Date().toLocaleDateString("en-CA");
@@ -94,9 +80,16 @@ function subscribeRealtime(table, onChange) {
   const ws = new WebSocket(url);
   const topic = `realtime:public:${table}`;
   let heartbeat;
+  let closed = false;
+
+  function safeSend(msg) {
+    if (!closed && ws.readyState === WebSocket.OPEN) {
+      try { ws.send(msg); } catch (_) {}
+    }
+  }
 
   ws.onopen = () => {
-    ws.send(JSON.stringify({ topic, event: "phx_join", payload: {
+    safeSend(JSON.stringify({ topic, event: "phx_join", payload: {
       config: { broadcast: { self: false }, presence: { key: "" } }
     }, ref: "1" }));
   };
@@ -105,53 +98,38 @@ function subscribeRealtime(table, onChange) {
     try {
       const data = JSON.parse(msg.data);
       if (["INSERT","UPDATE","DELETE"].includes(data.event)) onChange(data);
-      if (data.event === "phx_reply" && data.payload?.status === "ok") {
+      if (data.event === "phx_reply" && data.payload?.status === "ok" && !heartbeat) {
         heartbeat = setInterval(() =>
-          ws.send(JSON.stringify({ topic: "phoenix", event: "heartbeat", payload: {}, ref: "hb" }))
+          safeSend(JSON.stringify({ topic: "phoenix", event: "heartbeat", payload: {}, ref: "hb" }))
         , 25000);
       }
     } catch (_) {}
   };
 
-  return () => { clearInterval(heartbeat); ws.close(); };
+  ws.onclose = () => { closed = true; clearInterval(heartbeat); };
+  ws.onerror = () => { closed = true; clearInterval(heartbeat); };
+
+  return () => { closed = true; clearInterval(heartbeat); if (ws.readyState !== WebSocket.CLOSED) ws.close(); };
 }
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
 
-function sumIngredientAmount(list) {
-  return (list || []).reduce((s, i) => s + (i.lbs ?? i.pct ?? 0), 0);
-}
-
-// Choose the DDG or No-DDG list for a lbs-mode ration. If the preferred variant
-// was never filled in (sums to 0) but the other variant has real amounts, fall
-// back to that one — guards against a ration where only one variant got edited
-// while a pen/schedule's "Use DDG" flag points at the empty one.
-function pickRationList(ration, preferDdg) {
-  const primary = preferDdg ? ration.ingredients : ration.ingredients_no_ddg;
-  const fallback = preferDdg ? ration.ingredients_no_ddg : ration.ingredients;
-  if (sumIngredientAmount(primary) === 0 && sumIngredientAmount(fallback) > 0) {
-    return { list: fallback || [], usedDdg: !preferDdg };
-  }
-  return { list: primary || [], usedDdg: preferDdg };
-}
-
 function getTotalLbs(pen, ration) {
   if (ration?.mode === "lbs") {
     // lbs Direct: total is sum of stored ingredient lbs
-    const { list } = pickRationList(ration, pen.use_ddg);
-    return Math.round(sumIngredientAmount(list) * 10) / 10;
+    const list = pen.use_ddg ? ration.ingredients : ration.ingredients_no_ddg;
+    return Math.round((list || []).reduce((s, i) => s + (i.lbs || 0), 0) * 10) / 10;
   }
   return pen.total_lbs || 0;
 }
 
 function getIngredients(ration, useDdg, totalLbs) {
+  const list = useDdg ? ration.ingredients : ration.ingredients_no_ddg;
   if (ration.mode === "lbs") {
     // lbs Direct: stored lbs are the exact amounts — no calculation needed
-    const { list } = pickRationList(ration, useDdg);
-    return (list || []).map(i => ({ ...i, lbs: i.lbs || 0 }));
+    return list.map(i => ({ ...i, lbs: i.lbs || 0 }));
   }
   // pct mode: calculate from pen total lbs × percentage
-  const list = useDdg ? ration.ingredients : ration.ingredients_no_ddg;
   return list.map(i => ({ ...i, lbs: Math.round(i.pct * totalLbs * 10) / 10 }));
 }
 
@@ -478,40 +456,6 @@ const css = `
   .pct-warning.ok { color: var(--accent); }
   .pct-warning.warn { color: var(--warn); }
 
-  /* ── RATION CARD (merged DDG / No-DDG) ── */
-  .ration-editor-card.new { border: 1px dashed var(--accent); }
-
-  .ration-time-tag {
-    display: inline-block; font-family: var(--mono); font-size: 10px; font-weight: 500;
-    padding: 3px 8px; border-radius: 5px; flex-shrink: 0;
-  }
-  .ration-time-tag.am { background: var(--fp-light); color: var(--fp); }
-  .ration-time-tag.pm { background: var(--cp-light); color: var(--cp); }
-
-  .ration-delete-btn {
-    background: none; border: none; cursor: pointer; color: var(--text-3);
-    font-size: 14px; padding: 4px; line-height: 1; transition: color 0.15s; flex-shrink: 0;
-  }
-  .ration-delete-btn:hover:not(:disabled) { color: var(--danger); }
-  .ration-delete-btn:disabled { opacity: 0.5; cursor: default; }
-
-  .variant-toggle { display: flex; gap: 4px; margin: 10px 0; }
-  .variant-btn {
-    flex: 1; padding: 6px 8px; font-size: 11px; font-family: var(--mono); font-weight: 500;
-    border-radius: 6px; border: 1px solid var(--border); background: none; color: var(--text-3);
-    cursor: pointer; transition: all 0.15s;
-  }
-  .variant-btn.active { background: var(--accent-light); color: var(--accent-text); border-color: var(--accent-light); }
-
-  .new-ration-btn {
-    width: 100%; margin-top: 4px; padding: 12px;
-    background: var(--accent-light); color: var(--accent-text);
-    border: 1px dashed var(--accent); border-radius: 10px;
-    font-family: var(--mono); font-size: 12px; font-weight: 500;
-    cursor: pointer; transition: all 0.15s;
-  }
-  .new-ration-btn:hover { background: var(--accent); color: white; border-style: solid; }
-
   /* ── MIXER MODE ── */
   .mixer {
     margin-top: 12px; background: var(--bg);
@@ -793,13 +737,9 @@ function CalendarModal({ pen, rations, existingSchedule, timeOfDay, onSave, onCl
   const [useDdg, setUseDdg] = useState(pen.use_ddg);
   const [saving, setSaving] = useState(false);
 
-  // Pre-mark dates that already have a schedule for this AM/PM period.
-  // Prefer the schedule row's own time_of_day (set at scheduling time); fall back
-  // to the linked ration's time_of_day for older rows saved before that column existed.
+  // Pre-mark dates that already have a schedule
   const scheduledMap = {};
-  (existingSchedule || [])
-    .filter(s => s.pen_id === pen.id && (s.time_of_day || rations.find(r => r.id === s.ration_id)?.time_of_day) === timeOfDay)
-    .forEach(s => { scheduledMap[s.date] = s; });
+  (existingSchedule || []).filter(s => s.pen_id === pen.id && rations.find(r => r.id === s.ration_id)?.time_of_day === timeOfDay).forEach(s => { scheduledMap[s.date] = s; });
 
   const monthName = new Date(viewYear, viewMonth).toLocaleDateString("en-US", { month: "long", year: "numeric" });
   const daysInMonth = getDaysInMonth(viewYear, viewMonth);
@@ -827,7 +767,7 @@ function CalendarModal({ pen, rations, existingSchedule, timeOfDay, onSave, onCl
     if (selectedDates.size === 0) return;
     setSaving(true);
     const rows = [...selectedDates].map(date => ({
-      pen_id: pen.id, date, ration_id: rationId, use_ddg: useDdg, time_of_day: timeOfDay,
+      pen_id: pen.id, date, ration_id: rationId, use_ddg: useDdg,
     }));
     await onSave(pen.id, rows);
     setSaving(false);
@@ -1118,8 +1058,7 @@ function FeederView({ pens, rations, events, feeders, todaySchedule, onConfirm }
     const pen = pens.find(p => p.id === s.pen_id);
     if (!pen || !pen.is_active) return false;
     const ration = rations.find(r => r.id === s.ration_id);
-    const period = s.time_of_day || ration?.time_of_day;
-    return period === feedPeriod;
+    return ration?.time_of_day === feedPeriod;
   });
 
   // Match schedule entries to feed events for confirmation state
@@ -1207,8 +1146,8 @@ function PenCard({ pen, rations, schedule, onSave, onSaveSchedule }) {
     setTimeout(() => setSaved(false), 2000);
   }
 
-  const amUpcoming = (schedule || []).filter(s => (s.time_of_day || rations.find(r => r.id === s.ration_id)?.time_of_day) === "AM").length;
-  const pmUpcoming = (schedule || []).filter(s => (s.time_of_day || rations.find(r => r.id === s.ration_id)?.time_of_day) === "PM").length;
+  const amUpcoming = (schedule || []).filter(s => rations.find(r => r.id === s.ration_id)?.time_of_day === "AM").length;
+  const pmUpcoming = (schedule || []).filter(s => rations.find(r => r.id === s.ration_id)?.time_of_day === "PM").length;
 
   return (
     <>
@@ -1290,65 +1229,38 @@ function PenCard({ pen, rations, schedule, onSave, onSaveSchedule }) {
 // ── ADMIN VIEW ────────────────────────────────────────────────────────────────
 
 
-// Legacy rations may still have %-based ingredients (pct of a pen's total lbs).
-// We only ever edit in fixed lbs now — this gives old % entries a starting lbs
-// number (pct × 100) so an admin can review and correct the real amount.
-function toLbsIngredient(i) {
-  return {
-    name: i.name || "",
-    lbs: i.lbs !== undefined ? Math.round((parseFloat(i.lbs) || 0) * 10) / 10 : Math.round((i.pct || 0) * 1000) / 10,
-  };
-}
-
-function RationCard({ ration, onSave, onDelete, isNew, onCancelNew, knownIngredients }) {
-  const [open, setOpen] = useState(!!isNew);
-  const [variant, setVariant] = useState("ddg"); // "ddg" | "no-ddg"
-  const [rationName, setRationName] = useState(ration.name || "");
-  const [timeOfDay, setTimeOfDay] = useState(ration.time_of_day || "AM");
-  const [ddgIngredients, setDdgIngredients] = useState((ration.ingredients || []).map(toLbsIngredient));
-  const [noDdgIngredients, setNoDdgIngredients] = useState((ration.ingredients_no_ddg || []).map(toLbsIngredient));
+function RationEditorCard({ ration, variant, onSave, onReset }) {
+  const [open, setOpen] = useState(false);
+  const [ingredients, setIngredients] = useState(
+    (variant === "ddg" ? ration.ingredients : ration.ingredients_no_ddg).map(i => ({ ...i }))
+  );
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [deleting, setDeleting] = useState(false);
+  const [inputMode, setInputMode] = useState(ration.mode === "lbs" ? "lbs" : "pct");
+  const [rationName, setRationName] = useState(ration.name);
 
-  // Sync from parent when this (existing) ration changes externally
+  // Sync name and mode if parent rations array updates
   useEffect(() => {
-    if (isNew) return;
     setRationName(ration.name);
-    setTimeOfDay(ration.time_of_day);
-    setDdgIngredients((ration.ingredients || []).map(toLbsIngredient));
-    setNoDdgIngredients((ration.ingredients_no_ddg || []).map(toLbsIngredient));
-  }, [ration.id, ration.name, ration.time_of_day]);
+    const newMode = ration.mode === "lbs" ? "lbs" : "pct";
+    setInputMode(newMode);
+    if (newMode === "lbs") {
+      const list = variant === "ddg" ? ration.ingredients : ration.ingredients_no_ddg;
+      setIngredients((list || []).map(i => ({ ...i, _rawLbs: i.lbs || 0 })));
+    }
+  }, [ration.name, ration.mode]);
 
-  const ingredients = variant === "ddg" ? ddgIngredients : noDdgIngredients;
-  const setIngredients = variant === "ddg" ? setDdgIngredients : setNoDdgIngredients;
   const baseIngredients = variant === "ddg" ? ration.base_ingredients : ration.base_ingredients_no_ddg;
-  const hasBase = !isNew && !!baseIngredients;
+  const hasBase = !!baseIngredients;
+  const isModified = hasBase && JSON.stringify(ingredients) !== JSON.stringify(baseIngredients);
 
-  // Strip the transient "_custom" UI flag (marks a row as free-text entry) before
-  // saving or comparing against stored data.
-  function cleanIng(i) { return { name: i.name, lbs: parseFloat(i.lbs) || 0 }; }
+  const totalPct = Math.round(ingredients.reduce((s, i) => s + (parseFloat(i.pct) || 0), 0) * 100) / 100;
+  const pctOk = inputMode === "lbs" || Math.abs(totalPct - 1) < 0.005;
 
-  const isModified = !isNew && (
-    (!!ration.base_ingredients && JSON.stringify(ddgIngredients.map(cleanIng)) !== JSON.stringify(ration.base_ingredients.map(toLbsIngredient))) ||
-    (!!ration.base_ingredients_no_ddg && JSON.stringify(noDdgIngredients.map(cleanIng)) !== JSON.stringify(ration.base_ingredients_no_ddg.map(toLbsIngredient)))
-  );
-
-  function updateName(idx, name) {
-    setIngredients(prev => prev.map((i, n) => n === idx ? { ...i, name } : i));
-    setSaved(false);
-  }
-
-  function setCustomRow(idx) {
-    setIngredients(prev => prev.map((i, n) => n === idx ? { ...i, name: "", _custom: true } : i));
-    setSaved(false);
-  }
-
-  function updateLbs(idx, val) {
-    setIngredients(prev => prev.map((i, n) => n === idx ? { ...i, lbs: parseFloat(val) || 0 } : i));
+  function updateIng(idx, field, val) {
+    setIngredients(prev => prev.map((i, n) => n === idx ? { ...i, [field]: field === "pct" ? parseFloat(val) || 0 : val } : i));
     setSaved(false);
   }
 
@@ -1358,214 +1270,178 @@ function RationCard({ ration, onSave, onDelete, isNew, onCancelNew, knownIngredi
   }
 
   function addIng() {
-    setIngredients(prev => [...prev, { name: "", lbs: 0 }]);
+    setIngredients(prev => [...prev, { name: "New ingredient", pct: 0 }]);
     setSaved(false);
   }
 
-  const nameOk = rationName.trim().length > 0;
-  const readyToCreate = isNew && nameOk && ddgIngredients.length > 0 && ddgIngredients.every(i => i.name.trim());
-
-  const dirty = isNew ||
-    rationName.trim() !== ration.name ||
-    timeOfDay !== ration.time_of_day ||
-    JSON.stringify(ddgIngredients.map(cleanIng)) !== JSON.stringify((ration.ingredients || []).map(toLbsIngredient)) ||
-    JSON.stringify(noDdgIngredients.map(cleanIng)) !== JSON.stringify((ration.ingredients_no_ddg || []).map(toLbsIngredient));
-
   async function handleSave() {
     setSaving(true);
-    const payload = {
-      name: rationName.trim() || (isNew ? "Untitled ration" : ration.name),
-      time_of_day: timeOfDay,
-      mode: "lbs",
-      ingredients: ddgIngredients.map(cleanIng),
-      ingredients_no_ddg: noDdgIngredients.map(cleanIng),
-    };
+    const field = variant === "ddg" ? "ingredients" : "ingredients_no_ddg";
 
-    try {
-      if (isNew) {
-        await onSave(payload);
-      } else {
-        await onSave(ration.id, payload);
-        setSaved(true);
-        setTimeout(() => setSaved(false), 2000);
-      }
-    } finally {
-      setSaving(false);
+    let finalIngredients;
+    if (inputMode === "lbs") {
+      // lbs Direct: store exact lbs — no percentage calculation
+      finalIngredients = ingredients.map(i => ({
+        name: i.name,
+        lbs: parseFloat(i._rawLbs) || 0,
+      }));
+    } else {
+      // pct mode: store clean percentages only
+      finalIngredients = ingredients.map(({ name, pct }) => ({ name, pct }));
     }
+
+    const updates = {
+      [field]: finalIngredients,
+      mode: inputMode,
+      name: rationName.trim() || ration.name,
+    };
+    await onSave(ration.id, updates);
+    setIngredients(finalIngredients);
+    setSaving(false);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
   }
 
   async function handleReset() {
     if (!confirmReset) { setConfirmReset(true); return; }
     setResetting(true);
     const field = variant === "ddg" ? "ingredients" : "ingredients_no_ddg";
-    const resetLbs = baseIngredients.map(toLbsIngredient);
-    await onSave(ration.id, { [field]: resetLbs, mode: "lbs" });
-    setIngredients(resetLbs);
+    await onSave(ration.id, {
+      [field]: baseIngredients,
+    });
+    setIngredients(baseIngredients.map(i => ({ ...i })));
     setResetting(false);
     setConfirmReset(false);
     setSaved(false);
   }
 
-  async function handleDelete() {
-    if (!confirmDelete) { setConfirmDelete(true); return; }
-    setDeleting(true);
-    await onDelete(ration.id);
-  }
-
-  const totalLbs = Math.round(ingredients.reduce((s, i) => s + (parseFloat(i.lbs) || 0), 0) * 10) / 10;
+  const dirty = JSON.stringify(ingredients) !== JSON.stringify(
+    (variant === "ddg" ? ration.ingredients : ration.ingredients_no_ddg)
+  ) || rationName.trim() !== ration.name;
 
   return (
-    <div className={`ration-editor-card${isNew ? " new" : ""}`}>
-      <div
-        className="ration-editor-header"
-        style={isNew ? { cursor: "default" } : undefined}
-        onClick={() => { if (isNew) return; setOpen(o => !o); setConfirmReset(false); setConfirmDelete(false); }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {!isNew && <span className={`ration-time-tag ${(timeOfDay || "").toLowerCase()}`}>{timeOfDay}</span>}
-          <div>
-            <div className="ration-editor-title">
-              {isNew ? "New ration" : rationName}
-              {isModified && <span style={{ marginLeft: 8, fontSize: 10, fontFamily: "var(--mono)", color: "var(--warn)", background: "var(--warn-light)", padding: "2px 6px", borderRadius: 4 }}>modified</span>}
-            </div>
-            {!isNew && (
-              <div className="ration-editor-meta">{ddgIngredients.length} DDG · {noDdgIngredients.length} No DDG</div>
-            )}
+    <div className="ration-editor-card">
+      <div className="ration-editor-header" onClick={() => { setOpen(o => !o); setConfirmReset(false); }}>
+        <div>
+          <div className="ration-editor-title">
+            {variant === "ddg" ? rationName : `${rationName} · No DDG`}
+            {isModified && <span style={{ marginLeft: 8, fontSize: 10, fontFamily: "var(--mono)", color: "var(--warn)", background: "var(--warn-light)", padding: "2px 6px", borderRadius: 4 }}>modified</span>}
           </div>
+          <div className="ration-editor-meta">{ingredients.length} ingredients</div>
         </div>
-        {isNew ? (
-          <button className="ration-delete-btn" onClick={onCancelNew}>✕</button>
-        ) : (
-          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-            <button
-              className="ration-delete-btn"
-              onClick={e => { e.stopPropagation(); handleDelete(); }}
-              disabled={deleting}
-              title="Delete ration"
-            >
-              {confirmDelete ? "⚠" : "🗑"}
-            </button>
-            <span className={`ration-editor-chevron${open ? " open" : ""}`}>▼</span>
-          </div>
-        )}
+        <span className={`ration-editor-chevron${open ? " open" : ""}`}>▼</span>
       </div>
 
-      {(open || isNew) && (
+      {open && (
         <div className="ration-editor-body">
-          <div className="field-row" style={{ marginTop: 10 }}>
-            <span className="field-label">Ration name</span>
-            <input
-              className="field-input"
-              value={rationName}
-              onChange={e => { setRationName(e.target.value); setSaved(false); }}
-              placeholder="e.g. Starter"
-            />
-          </div>
-          <div className="field-row">
-            <span className="field-label">Feed time</span>
-            <select className="field-select" value={timeOfDay} onChange={e => { setTimeOfDay(e.target.value); setSaved(false); }}>
-              <option value="AM">AM</option>
-              <option value="PM">PM</option>
-            </select>
-          </div>
-
-          <div className="variant-toggle">
-            <button className={`variant-btn${variant === "ddg" ? " active" : ""}`} onClick={() => setVariant("ddg")}>With DDG</button>
-            <button className={`variant-btn${variant === "no-ddg" ? " active" : ""}`} onClick={() => setVariant("no-ddg")}>No DDG</button>
-          </div>
-
-          {variant === "no-ddg" && noDdgIngredients.length === 0 && ddgIngredients.length > 0 && (
-            <button className="ration-add-btn" style={{ marginBottom: 10 }}
-              onClick={() => setNoDdgIngredients(ddgIngredients.map(i => ({ ...i })))}>
-              ⧉ Copy ingredients from "With DDG"
-            </button>
+          {variant === "ddg" && (
+            <div className="field-row" style={{ marginBottom: 10 }}>
+              <span className="field-label">Ration name</span>
+              <input
+                className="field-input"
+                value={rationName}
+                onChange={e => { setRationName(e.target.value); setSaved(false); }}
+                placeholder="e.g. Starter AM"
+              />
+            </div>
           )}
+          <div className="input-mode-toggle">
+            <button className={`input-mode-btn${inputMode === "pct" ? " active" : ""}`} onClick={() => setInputMode("pct")}>% Percentage</button>
+            <button className={`input-mode-btn${inputMode === "lbs" ? " active" : ""}`} onClick={() => {
+              setIngredients(prev => prev.map(i => ({
+                ...i,
+                _rawLbs: i.lbs !== undefined ? i.lbs : Math.round(i.pct * 1000) / 10
+              })));
+              setInputMode("lbs");
+            }}>lbs Direct</button>
+          </div>
 
-          <div className="ration-field-row header" style={{ gridTemplateColumns: "1fr 90px 28px" }}>
+          <div className="ration-field-row header">
             <span>Ingredient</span>
-            <span style={{textAlign:"right"}}>Lbs</span>
+            <span style={{textAlign:"right"}}>{inputMode === "pct" ? "%" : "lbs"}</span>
+            <span style={{textAlign:"right"}}>{inputMode === "pct" ? "lbs" : "%"}</span>
             <span></span>
           </div>
 
-          {ingredients.map((ing, idx) => {
-            const isCustomRow = ing._custom || (ing.name !== "" && !knownIngredients.includes(ing.name));
+          {(() => {
+            const totalRaw = inputMode === "lbs"
+              ? ingredients.reduce((s, i) => s + (parseFloat(i._rawLbs) || 0), 0)
+              : 0;
+            return ingredients.map((ing, idx) => {
+            const pctDisplay = inputMode === "lbs" && totalRaw > 0
+              ? Math.round((parseFloat(ing._rawLbs) || 0) / totalRaw * 1000) / 10
+              : Math.round(ing.pct * 1000) / 10;
             return (
-              <div className="ration-field-row" style={{ gridTemplateColumns: "1fr 90px 28px" }} key={idx}>
-                {isCustomRow ? (
-                  <input
-                    className="ration-ing-input" style={{ textAlign: "left" }}
-                    value={ing.name}
-                    autoFocus
-                    placeholder="New ingredient name"
-                    onChange={e => updateName(idx, e.target.value)}
-                  />
-                ) : (
-                  <select
-                    className="ration-ing-input" style={{ textAlign: "left" }}
-                    value={ing.name}
-                    onChange={e => {
-                      if (e.target.value === "__custom__") setCustomRow(idx);
-                      else updateName(idx, e.target.value);
-                    }}
-                  >
-                    <option value="" disabled>Select ingredient…</option>
-                    {knownIngredients.map(name => <option key={name} value={name}>{name}</option>)}
-                    <option value="__custom__">+ Add new ingredient…</option>
-                  </select>
-                )}
+              <div className="ration-field-row" key={idx}>
                 <input
-                  className="ration-ing-input"
-                  type="number" min="0" step="0.1"
-                  value={ing.lbs}
-                  onChange={e => updateLbs(idx, e.target.value)}
+                  className="ration-ing-input" style={{ textAlign: "left" }}
+                  value={ing.name}
+                  onChange={e => updateIng(idx, "name", e.target.value)}
                 />
+                {inputMode === "pct" ? (
+                  <>
+                    <input
+                      className="ration-ing-input"
+                      type="number" min="0" max="100" step="0.1"
+                      value={pctDisplay}
+                      onChange={e => updateIng(idx, "pct", parseFloat(e.target.value) / 100 || 0)}
+                    />
+                    <span style={{ textAlign: "right", fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-2)" }}>{pctDisplay}%</span>
+                  </>
+                ) : (
+                  <>
+                    <input
+                      className="ration-ing-input"
+                      type="number" min="0" step="0.1"
+                      value={ing._rawLbs !== undefined ? ing._rawLbs : Math.round(ing.pct * 1000) / 10}
+                      onChange={e => {
+                        const newLbs = parseFloat(e.target.value) || 0;
+                        updateIng(idx, "_rawLbs", newLbs);
+                      }}
+                    />
+                    <span style={{ textAlign: "right", fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-2)" }}>{pctDisplay}%</span>
+                  </>
+                )}
                 <button className="ration-remove-btn" onClick={() => removeIng(idx)}>×</button>
               </div>
             );
-          })}
+            });
+          })()}
 
           <button className="ration-add-btn" onClick={addIng}>+ Add ingredient</button>
 
-          <div className="pct-warning ok">Total: {totalLbs} lbs · exact amounts, no pen total needed</div>
-
-          {isNew ? (
-            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-              <button className="modal-cancel" style={{ flex: 1 }} onClick={onCancelNew}>Cancel</button>
-              <button className="save-btn" style={{ flex: 2, marginTop: 0 }} onClick={handleSave} disabled={saving || !readyToCreate}>
-                {saving ? "Creating…" : "Create ration"}
-              </button>
+          {inputMode === "pct" && (
+            <div className={`pct-warning ${pctOk ? "ok" : "warn"}`}>
+              {pctOk ? "✓ Percentages sum to 100%" : `⚠ Percentages sum to ${Math.round(totalPct * 100)}% — must equal 100%`}
             </div>
-          ) : (
-            <>
-              {dirty && (
-                <button className="save-btn" onClick={handleSave} disabled={saving}>
-                  {saving ? "Saving…" : "Save ration"}
-                </button>
-              )}
-              {saved && <div className="saved-badge">✓ Saved</div>}
+          )}
+          {inputMode === "lbs" && (
+            <div className="pct-warning ok">
+              Exact lbs stored — feeder mixes these exact amounts, no pen total needed
+            </div>
+          )}
 
-              {hasBase && (
-                <button
-                  onClick={handleReset}
-                  disabled={resetting}
-                  style={{
-                    width: "100%", marginTop: 8, padding: "8px",
-                    background: "none", border: `1px solid ${confirmReset ? "#8B1A1A" : "var(--border)"}`,
-                    borderRadius: 8, fontFamily: "var(--mono)", fontSize: 12,
-                    color: confirmReset ? "#8B1A1A" : "var(--text-3)",
-                    cursor: "pointer", transition: "all 0.15s",
-                  }}
-                >
-                  {resetting ? "Resetting…" : confirmReset ? `⚠ Tap again to confirm reset (${variant === "ddg" ? "DDG" : "No DDG"})` : `↩ Reset ${variant === "ddg" ? "DDG" : "No DDG"} to base`}
-                </button>
-              )}
+          {dirty && (
+            <button className="save-btn" onClick={handleSave} disabled={saving || !pctOk}>
+              {saving ? "Saving…" : "Save ration"}
+            </button>
+          )}
+          {saved && <div className="saved-badge">✓ Saved</div>}
 
-              {confirmDelete && (
-                <div style={{ marginTop: 8, fontSize: 11, fontFamily: "var(--mono)", color: "var(--danger)", textAlign: "center" }}>
-                  Tap 🗑 again to permanently delete this ration
-                </div>
-              )}
-            </>
+          {hasBase && (
+            <button
+              onClick={handleReset}
+              disabled={resetting}
+              style={{
+                width: "100%", marginTop: 8, padding: "8px",
+                background: "none", border: `1px solid ${confirmReset ? "#8B1A1A" : "var(--border)"}`,
+                borderRadius: 8, fontFamily: "var(--mono)", fontSize: 12,
+                color: confirmReset ? "#8B1A1A" : "var(--text-3)",
+                cursor: "pointer", transition: "all 0.15s",
+              }}
+            >
+              {resetting ? "Resetting…" : confirmReset ? "⚠ Tap again to confirm reset to base ration" : "↩ Reset to base ration"}
+            </button>
           )}
         </div>
       )}
@@ -1573,21 +1449,8 @@ function RationCard({ ration, onSave, onDelete, isNew, onCancelNew, knownIngredi
   );
 }
 
-function AdminView({ pens, rations, events, penSchedules, onSavePen, onSaveSchedule, onSaveRation, onCreateRation, onDeleteRation }) {
+function AdminView({ pens, rations, events, penSchedules, onSavePen, onSaveSchedule, onSaveRation }) {
   const [tab, setTab] = useState("pens");
-  const [creatingNew, setCreatingNew] = useState(false);
-
-  // Known ingredient names across every ration (DDG, No-DDG, and base formulas) —
-  // powers the ingredient dropdown so admins pick from what's already in use.
-  const knownIngredients = useMemo(() => {
-    const set = new Set();
-    rations.forEach(r => {
-      [r.ingredients, r.ingredients_no_ddg, r.base_ingredients, r.base_ingredients_no_ddg].forEach(list => {
-        (list || []).forEach(i => { if (i?.name) set.add(i.name); });
-      });
-    });
-    return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [rations]);
   const doneCount = events.filter(e => e.status === "done").length;
   const pendingCount = events.length - doneCount;
   const doneEvents = [...events].filter(e => e.status === "done")
@@ -1650,24 +1513,12 @@ function AdminView({ pens, rations, events, penSchedules, onSavePen, onSaveSched
       {tab === "rations" && (
         <div className="admin-section">
           <div className="admin-section-title">Ration formulas</div>
-
-          {creatingNew && (
-            <RationCard
-              ration={{ name: "", time_of_day: "AM", mode: "lbs", ingredients: [], ingredients_no_ddg: [] }}
-              isNew
-              knownIngredients={knownIngredients}
-              onSave={async payload => { await onCreateRation(payload); setCreatingNew(false); }}
-              onCancelNew={() => setCreatingNew(false)}
-            />
-          )}
-
           {rations.map(r => (
-            <RationCard key={r.id} ration={r} onSave={onSaveRation} onDelete={onDeleteRation} knownIngredients={knownIngredients} />
+            <div key={r.id}>
+              <RationEditorCard ration={r} variant="ddg" onSave={onSaveRation} />
+              <RationEditorCard ration={r} variant="no-ddg" onSave={onSaveRation} />
+            </div>
           ))}
-
-          {!creatingNew && (
-            <button className="new-ration-btn" onClick={() => setCreatingNew(true)}>+ New ration</button>
-          )}
         </div>
       )}
     </div>
@@ -1727,7 +1578,7 @@ export default function App() {
   const [todaySchedule, setTodaySchedule] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [offlinePending, setOfflinePending] = useState(() => loadQueue().length);
+  const [offlinePending, setOfflinePending] = useState(0);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
 
   async function loadSchedules(penList) {
@@ -1767,14 +1618,21 @@ export default function App() {
   useEffect(() => {
     function handleOnline() {
       setIsOnline(true);
-      flushQueue(setEvents).then(() => setOfflinePending(loadQueue().length));
+      flushQueue(setEvents).then(() => {
+        const remaining = loadQueue().length;
+        setOfflinePending(remaining);
+      });
     }
     function handleOffline() { setIsOnline(false); }
     window.addEventListener("online", handleOnline);
     window.addEventListener("offline", handleOffline);
     // Flush any queued items from previous session on load
     if (navigator.onLine) {
-      flushQueue(setEvents).then(() => setOfflinePending(loadQueue().length));
+      const queuedItems = loadQueue().length;
+      if (queuedItems > 0) {
+        setOfflinePending(queuedItems);
+        flushQueue(setEvents).then(() => setOfflinePending(loadQueue().length));
+      }
     }
     return () => {
       window.removeEventListener("online", handleOnline);
@@ -1850,37 +1708,13 @@ export default function App() {
     }
   }, []);
 
-  const createRation = useCallback(async (payload) => {
-    try {
-      await db.createRation(payload);
-      const fresh = await db.getRations();
-      if (fresh) setRations(fresh);
-    } catch (err) {
-      setError("Failed to create ration. Try again.");
-      setTimeout(() => setError(null), 3000);
-      throw err;
-    }
-  }, []);
-
-  const deleteRation = useCallback(async (rationId) => {
-    try {
-      await db.deleteRation(rationId);
-      setRations(prev => prev.filter(r => r.id !== rationId));
-    } catch (err) {
-      setError("Failed to delete ration. Try again.");
-      setTimeout(() => setError(null), 3000);
-    }
-  }, []);
-
   const saveSchedule = useCallback(async (penId, rows) => {
     try {
       await db.upsertPenSchedule(rows);
       setPenSchedules(prev => {
         const existing = prev[penId] || [];
-        // Key on date + time_of_day, not just date — AM and PM are separate
-        // schedule slots for the same day and must not evict each other.
-        const newKeys = new Set(rows.map(r => `${r.date}|${r.time_of_day}`));
-        const merged = existing.filter(r => !newKeys.has(`${r.date}|${r.time_of_day}`)).concat(rows);
+        const newDates = new Set(rows.map(r => r.date));
+        const merged = existing.filter(r => !newDates.has(r.date)).concat(rows);
         return { ...prev, [penId]: merged.sort((a,b) => a.date.localeCompare(b.date)) };
       });
     } catch (err) {
@@ -1935,7 +1769,7 @@ export default function App() {
         {role === "feeder" ? (
           <FeederView pens={pens} rations={rations} events={events} feeders={feeders} todaySchedule={todaySchedule} onConfirm={confirmEvent} />
         ) : (
-          <AdminView pens={pens} rations={rations} events={events} penSchedules={penSchedules} onSavePen={savePen} onSaveSchedule={saveSchedule} onSaveRation={saveRation} onCreateRation={createRation} onDeleteRation={deleteRation} />
+          <AdminView pens={pens} rations={rations} events={events} penSchedules={penSchedules} onSavePen={savePen} onSaveSchedule={saveSchedule} onSaveRation={saveRation} />
         )}
       </div>
     </>
