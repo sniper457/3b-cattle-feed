@@ -35,16 +35,17 @@ const db = {
   },
   generateTodayEvents: () =>
     sbFetch("/rpc/generate_todays_events", { method: "POST", body: "{}" }),
-  confirmEvent: (id, confirmedBy) =>
+  confirmEvent: (id, confirmedBy, notes) =>
     sbFetch(`/feed_events?id=eq.${id}`, {
       method: "PATCH",
       body: JSON.stringify({
         status: "done",
         confirmed_by: confirmedBy,
         confirmed_at: new Date().toISOString(),
+        notes: notes || null,
       }),
     }),
-  createAndConfirmEvent: (penId, timeOfDay, confirmedBy) =>
+  createAndConfirmEvent: (penId, timeOfDay, confirmedBy, notes) =>
     sbFetch("/feed_events", {
       method: "POST",
       headers: { "Prefer": "resolution=merge-duplicates,return=representation" },
@@ -55,6 +56,7 @@ const db = {
         status: "done",
         confirmed_by: confirmedBy,
         confirmed_at: new Date().toISOString(),
+        notes: notes || null,
       }),
     }),
   updatePen: (id, updates) =>
@@ -385,6 +387,53 @@ const css = `
   }
   .input-mode-btn.active { background: var(--fp-light); color: var(--fp); border-color: var(--fp-light); }
 
+  /* ── PIN SCREEN ── */
+  .pin-screen {
+    min-height: 100vh; background: var(--text);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 24px; padding: 32px;
+  }
+  .pin-logo { height: 36px; width: auto; margin-bottom: 8px; }
+  .pin-title { font-size: 14px; font-family: var(--mono); color: rgba(255,255,255,0.5); letter-spacing: 0.1em; text-transform: uppercase; }
+  .pin-dots { display: flex; gap: 16px; margin: 8px 0; }
+  .pin-dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.3); transition: all 0.15s; }
+  .pin-dot.filled { background: white; border-color: white; }
+  .pin-dot.error { background: #FF6B6B; border-color: #FF6B6B; }
+  .pin-pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; width: 240px; }
+  .pin-btn {
+    aspect-ratio: 1; border-radius: 50%; border: 1.5px solid rgba(255,255,255,0.15);
+    background: rgba(255,255,255,0.05); color: white; font-size: 22px; font-weight: 300;
+    cursor: pointer; transition: all 0.1s; display: flex; align-items: center; justify-content: center;
+  }
+  .pin-btn:hover { background: rgba(255,255,255,0.12); }
+  .pin-btn:active { background: rgba(255,255,255,0.2); transform: scale(0.95); }
+  .pin-btn.del { font-size: 16px; color: rgba(255,255,255,0.5); }
+  .pin-error { font-size: 12px; font-family: var(--mono); color: #FF6B6B; min-height: 18px; }
+
+  /* ── NOTES MODAL ── */
+  .notes-modal-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    z-index: 300; display: flex; align-items: flex-end; justify-content: center;
+  }
+  .notes-modal {
+    background: var(--surface); border-radius: 20px 20px 0 0;
+    width: 100%; max-width: 480px; padding: 20px 20px 36px;
+    animation: slideUp 0.2s ease;
+  }
+  .notes-modal-title { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+  .notes-modal-sub { font-size: 12px; font-family: var(--mono); color: var(--text-3); margin-bottom: 14px; }
+  .notes-textarea {
+    width: 100%; min-height: 100px; padding: 10px 12px;
+    border: 1px solid var(--border); border-radius: 8px;
+    font-family: var(--sans); font-size: 14px; color: var(--text);
+    background: var(--bg); resize: none; outline: none;
+    transition: border-color 0.15s; line-height: 1.5;
+  }
+  .notes-textarea:focus { border-color: var(--accent); }
+  .notes-actions { display: flex; gap: 8px; margin-top: 12px; }
+  .notes-skip { flex: 1; padding: 11px; background: none; border: 1px solid var(--border); border-radius: 8px; font-family: var(--mono); font-size: 12px; color: var(--text-3); cursor: pointer; }
+  .notes-submit { flex: 2; padding: 11px; background: var(--accent); border: none; color: white; border-radius: 8px; font-family: var(--mono); font-size: 12px; cursor: pointer; }
+
   /* ── MIXER MODE ── */
   .mixer { margin-top: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
   .mixer-step { padding: 16px; }
@@ -468,6 +517,53 @@ const css = `
   .pct-warning { font-size: 10px; font-family: var(--mono); margin-top: 4px; }
   .pct-warning.ok { color: var(--accent); }
   .pct-warning.warn { color: var(--warn); }
+
+  /* ── PIN SCREEN ── */
+  .pin-screen {
+    min-height: 100vh; background: var(--text);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 24px; padding: 32px;
+  }
+  .pin-logo { height: 36px; width: auto; margin-bottom: 8px; }
+  .pin-title { font-size: 14px; font-family: var(--mono); color: rgba(255,255,255,0.5); letter-spacing: 0.1em; text-transform: uppercase; }
+  .pin-dots { display: flex; gap: 16px; margin: 8px 0; }
+  .pin-dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.3); transition: all 0.15s; }
+  .pin-dot.filled { background: white; border-color: white; }
+  .pin-dot.error { background: #FF6B6B; border-color: #FF6B6B; }
+  .pin-pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; width: 240px; }
+  .pin-btn {
+    aspect-ratio: 1; border-radius: 50%; border: 1.5px solid rgba(255,255,255,0.15);
+    background: rgba(255,255,255,0.05); color: white; font-size: 22px; font-weight: 300;
+    cursor: pointer; transition: all 0.1s; display: flex; align-items: center; justify-content: center;
+  }
+  .pin-btn:hover { background: rgba(255,255,255,0.12); }
+  .pin-btn:active { background: rgba(255,255,255,0.2); transform: scale(0.95); }
+  .pin-btn.del { font-size: 16px; color: rgba(255,255,255,0.5); }
+  .pin-error { font-size: 12px; font-family: var(--mono); color: #FF6B6B; min-height: 18px; }
+
+  /* ── NOTES MODAL ── */
+  .notes-modal-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    z-index: 300; display: flex; align-items: flex-end; justify-content: center;
+  }
+  .notes-modal {
+    background: var(--surface); border-radius: 20px 20px 0 0;
+    width: 100%; max-width: 480px; padding: 20px 20px 36px;
+    animation: slideUp 0.2s ease;
+  }
+  .notes-modal-title { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+  .notes-modal-sub { font-size: 12px; font-family: var(--mono); color: var(--text-3); margin-bottom: 14px; }
+  .notes-textarea {
+    width: 100%; min-height: 100px; padding: 10px 12px;
+    border: 1px solid var(--border); border-radius: 8px;
+    font-family: var(--sans); font-size: 14px; color: var(--text);
+    background: var(--bg); resize: none; outline: none;
+    transition: border-color 0.15s; line-height: 1.5;
+  }
+  .notes-textarea:focus { border-color: var(--accent); }
+  .notes-actions { display: flex; gap: 8px; margin-top: 12px; }
+  .notes-skip { flex: 1; padding: 11px; background: none; border: 1px solid var(--border); border-radius: 8px; font-family: var(--mono); font-size: 12px; color: var(--text-3); cursor: pointer; }
+  .notes-submit { flex: 2; padding: 11px; background: var(--accent); border: none; color: white; border-radius: 8px; font-family: var(--mono); font-size: 12px; cursor: pointer; }
 
   /* ── MIXER MODE ── */
   .mixer {
@@ -937,7 +1033,7 @@ function MixerMode({ ingredients, totalLbs, onFinish, onCancel }) {
         </div>
         <div className="mixer-nav">
           <button className="mixer-btn back" onClick={() => setStep(0)}>↩</button>
-          <button className="mixer-btn finish" onClick={onFinish}>Mark as done</button>
+          <button className="mixer-btn finish" onClick={onFinish}>Mark as done →</button>
         </div>
       </div>
     );
@@ -991,8 +1087,10 @@ function MixerMode({ ingredients, totalLbs, onFinish, onCancel }) {
 }
 
 function FeedCard({ pen, ration, event, onConfirm, feederName }) {
-  const [mode, setMode] = useState("card"); // "card" | "overview" | "mixing"
+  const [mode, setMode] = useState("card"); // "card" | "mixing"
   const [confirming, setConfirming] = useState(false);
+  const [showNotes, setShowNotes] = useState(false);
+  const [pendingConfirm, setPendingConfirm] = useState(null);
   const totalLbs = getTotalLbs(pen, ration);
   const isDone = event.status === "done";
   const ingredients = getIngredients(ration, pen.use_ddg, totalLbs);
@@ -1000,12 +1098,28 @@ function FeedCard({ pen, ration, event, onConfirm, feederName }) {
   async function handleConfirm() {
     if (isDone || confirming) return;
     setConfirming(true);
-    await onConfirm(event.id, feederName);
-    setConfirming(false);
+    // Show notes modal before finalizing
+    setPendingConfirm(true);
+    setShowNotes(true);
     setMode("card");
   }
 
+  async function handleNotesSubmit(notes) {
+    setShowNotes(false);
+    await onConfirm(event.id, feederName, notes);
+    setConfirming(false);
+    setPendingConfirm(null);
+  }
+
   return (
+    <>
+    {showNotes && (
+      <NotesModal
+        penName={pen.name}
+        timeOfDay={event.time_of_day}
+        onSubmit={handleNotesSubmit}
+      />
+    )}
     <div className={`feed-card${isDone ? " done" : ""}`}>
       <div className="feed-card-top">
         <div className="feed-card-info">
@@ -1040,10 +1154,84 @@ function FeedCard({ pen, ration, event, onConfirm, feederName }) {
         </button>
       </div>
     </div>
+    </>
   );
 }
 
-// ── FEEDER VIEW ───────────────────────────────────────────────────────────────
+// ── PIN SCREEN ───────────────────────────────────────────────────────────────
+
+const ADMIN_PIN = "2252";
+
+function PinScreen({ onUnlock }) {
+  const [entered, setEntered] = useState("");
+  const [error, setError] = useState(false);
+
+  function press(digit) {
+    if (entered.length >= 4) return;
+    const next = entered + digit;
+    setEntered(next);
+    setError(false);
+    if (next.length === 4) {
+      if (next === ADMIN_PIN) {
+        setTimeout(() => onUnlock(), 150);
+      } else {
+        setTimeout(() => { setError(true); setEntered(""); }, 300);
+      }
+    }
+  }
+
+  function del() { setEntered(p => p.slice(0, -1)); setError(false); }
+
+  return (
+    <div className="pin-screen">
+      <img src="/logo-white.png" alt="Triple B Farms" className="pin-logo" />
+      <div className="pin-title">Admin Access</div>
+      <div className="pin-dots">
+        {[0,1,2,3].map(i => (
+          <div key={i} className={`pin-dot${entered.length > i ? (error ? " error" : " filled") : ""}`} />
+        ))}
+      </div>
+      <div className="pin-error">{error ? "Incorrect PIN" : ""}</div>
+      <div className="pin-pad">
+        {[1,2,3,4,5,6,7,8,9].map(n => (
+          <button key={n} className="pin-btn" onClick={() => press(String(n))}>{n}</button>
+        ))}
+        <div />
+        <button className="pin-btn" onClick={() => press("0")}>0</button>
+        <button className="pin-btn del" onClick={del}>⌫</button>
+      </div>
+    </div>
+  );
+}
+
+// ── NOTES MODAL ──────────────────────────────────────────────────────────────
+
+function NotesModal({ penName, timeOfDay, onSubmit }) {
+  const [notes, setNotes] = useState("");
+
+  return (
+    <div className="notes-modal-backdrop">
+      <div className="notes-modal">
+        <div className="modal-handle" />
+        <div className="notes-modal-title">Feeding complete · {penName}</div>
+        <div className="notes-modal-sub">{timeOfDay === "AM" ? "Morning" : "Afternoon"} feed · Any notes to log?</div>
+        <textarea
+          className="notes-textarea"
+          placeholder="e.g. cattle seem off feed, noticed injury, gate left open..."
+          value={notes}
+          onChange={e => setNotes(e.target.value)}
+          autoFocus
+        />
+        <div className="notes-actions">
+          <button className="notes-skip" onClick={() => onSubmit("")}>Skip</button>
+          <button className="notes-submit" onClick={() => onSubmit(notes)}>
+            {notes.trim() ? "Save note" : "Done"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function getCurrentFeedPeriod() {
   const hour = new Date().getHours();
@@ -1472,7 +1660,7 @@ function AdminView({ pens, rations, events, penSchedules, onSavePen, onSaveSched
   return (
     <div className="content">
       <div className="nav" style={{ margin: "0 -16px 16px", borderTop: "1px solid var(--border)" }}>
-        {[["pens","Pen Setup"],["rations","Rations"],["log","Today's Log"]].map(([t,label]) => (
+        {[["pens","Pen Setup"],["rations","Rations"],["log","Today's Log"],["notes","Notes"]].map(([t,label]) => (
           <button key={t} className={`nav-tab${tab === t ? " active" : ""}`} onClick={() => setTab(t)}>
             {label}
           </button>
@@ -1518,6 +1706,36 @@ function AdminView({ pens, rations, events, penSchedules, onSavePen, onSaveSched
                   </div>
                 );
               })
+            )}
+          </div>
+        </div>
+      )}
+
+      {tab === "notes" && (
+        <div className="admin-section">
+          <div className="admin-section-title">Feeder notes log</div>
+          <div className="pen-admin-card">
+            {events.filter(e => e.notes).length === 0 ? (
+              <div className="empty-log">No notes recorded yet</div>
+            ) : (
+              [...events]
+                .filter(e => e.notes)
+                .sort((a, b) => new Date(b.confirmed_at) - new Date(a.confirmed_at))
+                .map(ev => {
+                  const pen = pens.find(p => p.id === ev.pen_id);
+                  return (
+                    <div key={ev.id} style={{ padding: "10px 0", borderBottom: "1px solid var(--border-light)" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                        <span style={{ fontSize: 13, fontWeight: 500 }}>{pen?.name} · {ev.time_of_day}</span>
+                        <span style={{ fontSize: 11, fontFamily: "var(--mono)", color: "var(--text-3)" }}>{fmtTime(ev.confirmed_at)}</span>
+                      </div>
+                      <div style={{ fontSize: 11, fontFamily: "var(--mono)", color: "var(--text-3)", marginBottom: 4 }}>
+                        {ev.confirmed_by} · {new Date(ev.confirmed_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                      </div>
+                      <div style={{ fontSize: 13, color: "var(--text-2)", lineHeight: 1.5 }}>{ev.notes}</div>
+                    </div>
+                  );
+                })
             )}
           </div>
         </div>
@@ -1583,6 +1801,7 @@ async function flushQueue(setEvents) {
 
 export default function App() {
   const [role, setRole] = useState("feeder");
+  const [pinUnlocked, setPinUnlocked] = useState(false);
   const [pens, setPens] = useState([]);
   const [rations, setRations] = useState([]);
   const [events, setEvents] = useState([]);
@@ -1675,14 +1894,14 @@ export default function App() {
     return unsub;
   }, []);
 
-  const confirmEvent = useCallback(async (eventId, feederName) => {
+  const confirmEvent = useCallback(async (eventId, feederName, notes) => {
     const confirmedAt = new Date().toISOString();
     const isFakeId = !eventId || eventId.includes("-AM") || eventId.includes("-PM");
 
     // Optimistic update immediately
     setEvents(prev => prev.map(e =>
       e.id === eventId
-        ? { ...e, status: "done", confirmed_by: feederName, confirmed_at: confirmedAt }
+        ? { ...e, status: "done", confirmed_by: feederName, confirmed_at: confirmedAt, notes: notes || null }
         : e
     ));
 
@@ -1693,7 +1912,7 @@ export default function App() {
           const parts = eventId.split("-");
           const timeOfDay = parts[parts.length - 1]; // "AM" or "PM"
           const penId = parts.slice(0, parts.length - 1).join("-");
-          const result = await db.createAndConfirmEvent(penId, timeOfDay, feederName);
+          const result = await db.createAndConfirmEvent(penId, timeOfDay, feederName, notes);
           // Update events with the real event from DB
           if (result?.[0]) {
             setEvents(prev => {
@@ -1702,7 +1921,7 @@ export default function App() {
             });
           }
         } else {
-          await db.confirmEvent(eventId, feederName);
+          await db.confirmEvent(eventId, feederName, notes);
         }
         removeFromQueue(eventId);
       } catch {
@@ -1775,8 +1994,15 @@ export default function App() {
             <img src="/logo-white.png" alt="Triple B Farms" className="header-logo" />
             <div className="header-date">{todayStr()}</div>
           </div>
-          <button className="role-badge" onClick={() => setRole(r => r === "feeder" ? "admin" : "feeder")}>
-            {role === "feeder" ? "Feeder ↓" : "Admin ↓"}
+          <button className="role-badge" onClick={() => {
+            if (role === "feeder") {
+              if (pinUnlocked) { setRole("admin"); }
+              else { setRole("pin"); }
+            } else {
+              setRole("feeder"); setPinUnlocked(false);
+            }
+          }}>
+            {role === "feeder" ? "Admin" : role === "pin" ? "↩ Cancel" : "Exit Admin"}
           </button>
         </div>
 
@@ -1795,9 +2021,13 @@ export default function App() {
         )}
         {error && <div className="error-bar">{error}</div>}
 
-        {role === "feeder" ? (
+        {role === "feeder" && (
           <FeederView pens={pens} rations={rations} events={events} feeders={feeders} todaySchedule={todaySchedule} onConfirm={confirmEvent} />
-        ) : (
+        )}
+        {role === "pin" && (
+          <PinScreen onUnlock={() => { setPinUnlocked(true); setRole("admin"); }} />
+        )}
+        {role === "admin" && (
           <AdminView pens={pens} rations={rations} events={events} penSchedules={penSchedules} onSavePen={savePen} onSaveSchedule={saveSchedule} onSaveRation={saveRation} />
         )}
       </div>
