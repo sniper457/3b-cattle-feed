@@ -44,6 +44,19 @@ const db = {
         confirmed_at: new Date().toISOString(),
       }),
     }),
+  createAndConfirmEvent: (penId, timeOfDay, confirmedBy) =>
+    sbFetch("/feed_events", {
+      method: "POST",
+      headers: { "Prefer": "resolution=merge-duplicates,return=representation" },
+      body: JSON.stringify({
+        date: new Date().toLocaleDateString("en-CA"),
+        pen_id: penId,
+        time_of_day: timeOfDay,
+        status: "done",
+        confirmed_by: confirmedBy,
+        confirmed_at: new Date().toISOString(),
+      }),
+    }),
   updatePen: (id, updates) =>
     sbFetch(`/pens?id=eq.${id}`, {
       method: "PATCH",
@@ -1664,23 +1677,39 @@ export default function App() {
 
   const confirmEvent = useCallback(async (eventId, feederName) => {
     const confirmedAt = new Date().toISOString();
-    // Optimistic update immediately — works online or offline
+    const isFakeId = !eventId || eventId.includes("-AM") || eventId.includes("-PM");
+
+    // Optimistic update immediately
     setEvents(prev => prev.map(e =>
       e.id === eventId
         ? { ...e, status: "done", confirmed_by: feederName, confirmed_at: confirmedAt }
         : e
     ));
+
     if (navigator.onLine) {
       try {
-        await db.confirmEvent(eventId, feederName);
+        if (isFakeId) {
+          // No real event exists yet — parse penId and timeOfDay from fake ID
+          const parts = eventId.split("-");
+          const timeOfDay = parts[parts.length - 1]; // "AM" or "PM"
+          const penId = parts.slice(0, parts.length - 1).join("-");
+          const result = await db.createAndConfirmEvent(penId, timeOfDay, feederName);
+          // Update events with the real event from DB
+          if (result?.[0]) {
+            setEvents(prev => {
+              const filtered = prev.filter(e => e.id !== eventId);
+              return [...filtered, result[0]];
+            });
+          }
+        } else {
+          await db.confirmEvent(eventId, feederName);
+        }
         removeFromQueue(eventId);
       } catch {
-        // Online but request failed — queue it
         addToQueue({ eventId, confirmedBy: feederName, confirmedAt });
         setOfflinePending(prev => prev + 1);
       }
     } else {
-      // Offline — queue for later
       addToQueue({ eventId, confirmedBy: feederName, confirmedAt });
       setOfflinePending(prev => prev + 1);
     }
