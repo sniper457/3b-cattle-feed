@@ -45,6 +45,13 @@ const db = {
         notes: notes || null,
       }),
     }),
+  undoEvent: (id) =>
+    sbFetch(`/feed_events?id=eq.${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status: "pending", confirmed_by: null, confirmed_at: null, notes: null }),
+    }),
+  deleteEvent: (id) =>
+    sbFetch(`/feed_events?id=eq.${id}`, { method: "DELETE" }),
   createAndConfirmEvent: (penId, timeOfDay, confirmedBy, notes) =>
     sbFetch("/feed_events", {
       method: "POST",
@@ -730,15 +737,30 @@ const css = `
 
   /* Log */
   .log-row {
-    display: flex; align-items: center; gap: 10px;
-    padding: 8px 0; border-bottom: 1px solid var(--border-light); font-size: 12px;
+    border-bottom: 1px solid var(--border-light); font-size: 12px; cursor: pointer;
+    transition: background 0.1s;
   }
   .log-row:last-child { border-bottom: none; }
+  .log-row:hover { background: var(--bg); }
+  .log-row-main { display: flex; align-items: center; gap: 10px; padding: 8px 4px; }
   .log-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
   .log-dot.done { background: var(--accent); }
   .log-time { font-family: var(--mono); color: var(--text-3); width: 68px; flex-shrink: 0; }
   .log-pen { font-weight: 500; flex: 1; }
   .log-who { font-family: var(--mono); font-size: 11px; color: var(--text-3); }
+  .log-chevron { font-size: 10px; color: var(--text-3); transition: transform 0.15s; }
+  .log-chevron.open { transform: rotate(180deg); }
+  .log-actions {
+    display: flex; gap: 8px; padding: 0 4px 10px;
+  }
+  .log-action-btn {
+    flex: 1; padding: 8px; border-radius: 7px; font-family: var(--mono);
+    font-size: 11px; cursor: pointer; border: 1px solid var(--border);
+    background: none; transition: all 0.15s;
+  }
+  .log-action-btn.undo { color: var(--warn); border-color: var(--warn-light); background: var(--warn-light); }
+  .log-action-btn.delete { color: var(--danger); border-color: #FFCACA; background: #FFF0F0; }
+  .log-action-btn:hover { opacity: 0.75; }
   .empty-log { font-size: 12px; font-family: var(--mono); color: var(--text-3); padding: 12px 0; text-align: center; }
 
   .sync-dot {
@@ -1650,8 +1672,9 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
   );
 }
 
-function AdminView({ pens, rations, events, penSchedules, onSavePen, onSaveSchedule, onSaveRation }) {
+function AdminView({ pens, rations, events, penSchedules, onSavePen, onSaveSchedule, onSaveRation, onUndoEvent, onDeleteEvent }) {
   const [tab, setTab] = useState("pens");
+  const [expandedLog, setExpandedLog] = useState(null);
   const doneCount = events.filter(e => e.status === "done").length;
   const pendingCount = events.length - doneCount;
   const doneEvents = [...events].filter(e => e.status === "done")
@@ -1697,12 +1720,28 @@ function AdminView({ pens, rations, events, penSchedules, onSavePen, onSaveSched
             ) : (
               doneEvents.map(ev => {
                 const pen = pens.find(p => p.id === ev.pen_id);
+                const isExpanded = expandedLog === ev.id;
                 return (
-                  <div className="log-row" key={ev.id}>
-                    <div className="log-dot done" />
-                    <span className="log-time">{fmtTime(ev.confirmed_at)}</span>
-                    <span className="log-pen">{pen?.name} · {ev.time_of_day}</span>
-                    <span className="log-who">{ev.confirmed_by}</span>
+                  <div className="log-row" key={ev.id} onClick={() => setExpandedLog(isExpanded ? null : ev.id)}>
+                    <div className="log-row-main">
+                      <div className="log-dot done" />
+                      <span className="log-time">{fmtTime(ev.confirmed_at)}</span>
+                      <span className="log-pen">{pen?.name} · {ev.time_of_day}</span>
+                      <span className="log-who">{ev.confirmed_by}</span>
+                      <span className={`log-chevron${isExpanded ? " open" : ""}`}>▼</span>
+                    </div>
+                    {isExpanded && (
+                      <div className="log-actions" onClick={e => e.stopPropagation()}>
+                        <button className="log-action-btn undo" onClick={() => {
+                          onUndoEvent(ev.id);
+                          setExpandedLog(null);
+                        }}>↩ Undo</button>
+                        <button className="log-action-btn delete" onClick={() => {
+                          onDeleteEvent(ev.id);
+                          setExpandedLog(null);
+                        }}>✕ Delete</button>
+                      </div>
+                    )}
                   </div>
                 );
               })
@@ -1944,6 +1983,30 @@ export default function App() {
     }
   }, []);
 
+  const undoEvent = useCallback(async (eventId) => {
+    try {
+      await db.undoEvent(eventId);
+      setEvents(prev => prev.map(e =>
+        e.id === eventId
+          ? { ...e, status: "pending", confirmed_by: null, confirmed_at: null, notes: null }
+          : e
+      ));
+    } catch (err) {
+      setError("Failed to undo. Try again.");
+      setTimeout(() => setError(null), 3000);
+    }
+  }, []);
+
+  const deleteEvent = useCallback(async (eventId) => {
+    try {
+      await db.deleteEvent(eventId);
+      setEvents(prev => prev.filter(e => e.id !== eventId));
+    } catch (err) {
+      setError("Failed to delete. Try again.");
+      setTimeout(() => setError(null), 3000);
+    }
+  }, []);
+
   const saveRation = useCallback(async (rationId, updates) => {
     try {
       await db.updateRation(rationId, updates);
@@ -2028,7 +2091,7 @@ export default function App() {
           <PinScreen onUnlock={() => { setPinUnlocked(true); setRole("admin"); }} />
         )}
         {role === "admin" && (
-          <AdminView pens={pens} rations={rations} events={events} penSchedules={penSchedules} onSavePen={savePen} onSaveSchedule={saveSchedule} onSaveRation={saveRation} />
+          <AdminView pens={pens} rations={rations} events={events} penSchedules={penSchedules} onSavePen={savePen} onSaveSchedule={saveSchedule} onSaveRation={saveRation} onUndoEvent={undoEvent} onDeleteEvent={deleteEvent} />
         )}
       </div>
     </>
