@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 
 // ── SUPABASE ──────────────────────────────────────────────────────────────────
 
@@ -13,26 +13,13 @@ const headers = {
 };
 
 async function sbFetch(path, options = {}) {
-  let res;
-  try {
-    res = await fetch(`${SUPABASE_URL}/rest/v1${path}`, {
-      ...options,
-      headers: { ...headers, ...options.headers },
-    });
-  } catch (networkErr) {
-    // fetch() itself threw — no response at all, i.e. genuinely offline/unreachable.
-    const err = new Error(networkErr.message || "Network request failed");
-    err.isNetworkError = true;
-    throw err;
-  }
+  const res = await fetch(`${SUPABASE_URL}/rest/v1${path}`, {
+    ...options,
+    headers: { ...headers, ...options.headers },
+  });
   if (!res.ok) {
-    // Server responded but rejected the request (bad data, missing row, etc.) —
-    // this is NOT a connectivity problem, retrying won't help.
-    const body = await res.text();
-    const err = new Error(body || `Request failed (${res.status})`);
-    err.isNetworkError = false;
-    err.status = res.status;
-    throw err;
+    const err = await res.text();
+    throw new Error(err);
   }
   const text = await res.text();
   return text ? JSON.parse(text) : null;
@@ -48,13 +35,35 @@ const db = {
   },
   generateTodayEvents: () =>
     sbFetch("/rpc/generate_todays_events", { method: "POST", body: "{}" }),
-  confirmEvent: (id, confirmedBy) =>
+  confirmEvent: (id, confirmedBy, notes) =>
     sbFetch(`/feed_events?id=eq.${id}`, {
       method: "PATCH",
       body: JSON.stringify({
         status: "done",
         confirmed_by: confirmedBy,
         confirmed_at: new Date().toISOString(),
+        notes: notes || null,
+      }),
+    }),
+  undoEvent: (id) =>
+    sbFetch(`/feed_events?id=eq.${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status: "pending", confirmed_by: null, confirmed_at: null, notes: null }),
+    }),
+  deleteEvent: (id) =>
+    sbFetch(`/feed_events?id=eq.${id}`, { method: "DELETE" }),
+  createAndConfirmEvent: (penId, timeOfDay, confirmedBy, notes) =>
+    sbFetch("/feed_events", {
+      method: "POST",
+      headers: { "Prefer": "resolution=merge-duplicates,return=representation" },
+      body: JSON.stringify({
+        date: new Date().toLocaleDateString("en-CA"),
+        pen_id: penId,
+        time_of_day: timeOfDay,
+        status: "done",
+        confirmed_by: confirmedBy,
+        confirmed_at: new Date().toISOString(),
+        notes: notes || null,
       }),
     }),
   updatePen: (id, updates) =>
@@ -84,6 +93,15 @@ const db = {
     sbFetch(`/rations?id=eq.${id}`, {
       method: "PATCH",
       body: JSON.stringify(updates),
+    }),
+  createRation: (payload) =>
+    sbFetch("/rations", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  deleteRation: (id) =>
+    sbFetch(`/rations?id=eq.${id}`, {
+      method: "DELETE",
     }),
   getTodaySchedule: () => {
     const today = new Date().toLocaleDateString("en-CA");
@@ -132,22 +150,40 @@ function subscribeRealtime(table, onChange) {
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
 
+function sumIngredientAmount(list) {
+  return (list || []).reduce((s, i) => s + (i.lbs ?? i.pct ?? 0), 0);
+}
+
+// Choose the DDG or No-DDG list for a lbs-mode ration. If the preferred variant
+// was never filled in (sums to 0) but the other variant has real amounts, fall
+// back to that one — guards against a ration where only one variant got edited
+// while a pen/schedule's "Use DDG" flag points at the empty one.
+function pickRationList(ration, preferDdg) {
+  const primary = preferDdg ? ration.ingredients : ration.ingredients_no_ddg;
+  const fallback = preferDdg ? ration.ingredients_no_ddg : ration.ingredients;
+  if (sumIngredientAmount(primary) === 0 && sumIngredientAmount(fallback) > 0) {
+    return { list: fallback || [], usedDdg: !preferDdg };
+  }
+  return { list: primary || [], usedDdg: preferDdg };
+}
+
 function getTotalLbs(pen, ration) {
   if (ration?.mode === "lbs") {
     // lbs Direct: total is sum of stored ingredient lbs
-    const list = pen.use_ddg ? ration.ingredients : ration.ingredients_no_ddg;
-    return Math.round((list || []).reduce((s, i) => s + (i.lbs || 0), 0) * 10) / 10;
+    const { list } = pickRationList(ration, pen.use_ddg);
+    return Math.round(sumIngredientAmount(list) * 10) / 10;
   }
   return pen.total_lbs || 0;
 }
 
 function getIngredients(ration, useDdg, totalLbs) {
-  const list = useDdg ? ration.ingredients : ration.ingredients_no_ddg;
   if (ration.mode === "lbs") {
     // lbs Direct: stored lbs are the exact amounts — no calculation needed
-    return list.map(i => ({ ...i, lbs: i.lbs || 0 }));
+    const { list } = pickRationList(ration, useDdg);
+    return (list || []).map(i => ({ ...i, lbs: i.lbs || 0 }));
   }
   // pct mode: calculate from pen total lbs × percentage
+  const list = useDdg ? ration.ingredients : ration.ingredients_no_ddg;
   return list.map(i => ({ ...i, lbs: Math.round(i.pct * totalLbs * 10) / 10 }));
 }
 
@@ -390,6 +426,53 @@ const css = `
   }
   .input-mode-btn.active { background: var(--fp-light); color: var(--fp); border-color: var(--fp-light); }
 
+  /* ── PIN SCREEN ── */
+  .pin-screen {
+    min-height: 100vh; background: var(--text);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 24px; padding: 32px;
+  }
+  .pin-logo { height: 36px; width: auto; margin-bottom: 8px; }
+  .pin-title { font-size: 14px; font-family: var(--mono); color: rgba(255,255,255,0.5); letter-spacing: 0.1em; text-transform: uppercase; }
+  .pin-dots { display: flex; gap: 16px; margin: 8px 0; }
+  .pin-dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.3); transition: all 0.15s; }
+  .pin-dot.filled { background: white; border-color: white; }
+  .pin-dot.error { background: #FF6B6B; border-color: #FF6B6B; }
+  .pin-pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; width: 240px; }
+  .pin-btn {
+    aspect-ratio: 1; border-radius: 50%; border: 1.5px solid rgba(255,255,255,0.15);
+    background: rgba(255,255,255,0.05); color: white; font-size: 22px; font-weight: 300;
+    cursor: pointer; transition: all 0.1s; display: flex; align-items: center; justify-content: center;
+  }
+  .pin-btn:hover { background: rgba(255,255,255,0.12); }
+  .pin-btn:active { background: rgba(255,255,255,0.2); transform: scale(0.95); }
+  .pin-btn.del { font-size: 16px; color: rgba(255,255,255,0.5); }
+  .pin-error { font-size: 12px; font-family: var(--mono); color: #FF6B6B; min-height: 18px; }
+
+  /* ── NOTES MODAL ── */
+  .notes-modal-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    z-index: 300; display: flex; align-items: flex-end; justify-content: center;
+  }
+  .notes-modal {
+    background: var(--surface); border-radius: 20px 20px 0 0;
+    width: 100%; max-width: 480px; padding: 20px 20px 36px;
+    animation: slideUp 0.2s ease;
+  }
+  .notes-modal-title { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+  .notes-modal-sub { font-size: 12px; font-family: var(--mono); color: var(--text-3); margin-bottom: 14px; }
+  .notes-textarea {
+    width: 100%; min-height: 100px; padding: 10px 12px;
+    border: 1px solid var(--border); border-radius: 8px;
+    font-family: var(--sans); font-size: 14px; color: var(--text);
+    background: var(--bg); resize: none; outline: none;
+    transition: border-color 0.15s; line-height: 1.5;
+  }
+  .notes-textarea:focus { border-color: var(--accent); }
+  .notes-actions { display: flex; gap: 8px; margin-top: 12px; }
+  .notes-skip { flex: 1; padding: 11px; background: none; border: 1px solid var(--border); border-radius: 8px; font-family: var(--mono); font-size: 12px; color: var(--text-3); cursor: pointer; }
+  .notes-submit { flex: 2; padding: 11px; background: var(--accent); border: none; color: white; border-radius: 8px; font-family: var(--mono); font-size: 12px; cursor: pointer; }
+
   /* ── MIXER MODE ── */
   .mixer { margin-top: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
   .mixer-step { padding: 16px; }
@@ -473,6 +556,87 @@ const css = `
   .pct-warning { font-size: 10px; font-family: var(--mono); margin-top: 4px; }
   .pct-warning.ok { color: var(--accent); }
   .pct-warning.warn { color: var(--warn); }
+
+  /* ── RATION CARD (merged DDG / No-DDG) ── */
+  .ration-editor-card.new { border: 1px dashed var(--accent); }
+
+  .ration-time-tag {
+    display: inline-block; font-family: var(--mono); font-size: 10px; font-weight: 500;
+    padding: 3px 8px; border-radius: 5px; flex-shrink: 0;
+  }
+  .ration-time-tag.am { background: var(--fp-light); color: var(--fp); }
+  .ration-time-tag.pm { background: var(--cp-light); color: var(--cp); }
+
+  .ration-delete-btn {
+    background: none; border: none; cursor: pointer; color: var(--text-3);
+    font-size: 14px; padding: 4px; line-height: 1; transition: color 0.15s; flex-shrink: 0;
+  }
+  .ration-delete-btn:hover:not(:disabled) { color: var(--danger); }
+  .ration-delete-btn:disabled { opacity: 0.5; cursor: default; }
+
+  .variant-toggle { display: flex; gap: 4px; margin: 10px 0; }
+  .variant-btn {
+    flex: 1; padding: 6px 8px; font-size: 11px; font-family: var(--mono); font-weight: 500;
+    border-radius: 6px; border: 1px solid var(--border); background: none; color: var(--text-3);
+    cursor: pointer; transition: all 0.15s;
+  }
+  .variant-btn.active { background: var(--accent-light); color: var(--accent-text); border-color: var(--accent-light); }
+
+  .new-ration-btn {
+    width: 100%; margin-top: 4px; padding: 12px;
+    background: var(--accent-light); color: var(--accent-text);
+    border: 1px dashed var(--accent); border-radius: 10px;
+    font-family: var(--mono); font-size: 12px; font-weight: 500;
+    cursor: pointer; transition: all 0.15s;
+  }
+  .new-ration-btn:hover { background: var(--accent); color: white; border-style: solid; }
+
+  /* ── PIN SCREEN ── */
+  .pin-screen {
+    min-height: 100vh; background: var(--text);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 24px; padding: 32px;
+  }
+  .pin-logo { height: 36px; width: auto; margin-bottom: 8px; }
+  .pin-title { font-size: 14px; font-family: var(--mono); color: rgba(255,255,255,0.5); letter-spacing: 0.1em; text-transform: uppercase; }
+  .pin-dots { display: flex; gap: 16px; margin: 8px 0; }
+  .pin-dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.3); transition: all 0.15s; }
+  .pin-dot.filled { background: white; border-color: white; }
+  .pin-dot.error { background: #FF6B6B; border-color: #FF6B6B; }
+  .pin-pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; width: 240px; }
+  .pin-btn {
+    aspect-ratio: 1; border-radius: 50%; border: 1.5px solid rgba(255,255,255,0.15);
+    background: rgba(255,255,255,0.05); color: white; font-size: 22px; font-weight: 300;
+    cursor: pointer; transition: all 0.1s; display: flex; align-items: center; justify-content: center;
+  }
+  .pin-btn:hover { background: rgba(255,255,255,0.12); }
+  .pin-btn:active { background: rgba(255,255,255,0.2); transform: scale(0.95); }
+  .pin-btn.del { font-size: 16px; color: rgba(255,255,255,0.5); }
+  .pin-error { font-size: 12px; font-family: var(--mono); color: #FF6B6B; min-height: 18px; }
+
+  /* ── NOTES MODAL ── */
+  .notes-modal-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    z-index: 300; display: flex; align-items: flex-end; justify-content: center;
+  }
+  .notes-modal {
+    background: var(--surface); border-radius: 20px 20px 0 0;
+    width: 100%; max-width: 480px; padding: 20px 20px 36px;
+    animation: slideUp 0.2s ease;
+  }
+  .notes-modal-title { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+  .notes-modal-sub { font-size: 12px; font-family: var(--mono); color: var(--text-3); margin-bottom: 14px; }
+  .notes-textarea {
+    width: 100%; min-height: 100px; padding: 10px 12px;
+    border: 1px solid var(--border); border-radius: 8px;
+    font-family: var(--sans); font-size: 14px; color: var(--text);
+    background: var(--bg); resize: none; outline: none;
+    transition: border-color 0.15s; line-height: 1.5;
+  }
+  .notes-textarea:focus { border-color: var(--accent); }
+  .notes-actions { display: flex; gap: 8px; margin-top: 12px; }
+  .notes-skip { flex: 1; padding: 11px; background: none; border: 1px solid var(--border); border-radius: 8px; font-family: var(--mono); font-size: 12px; color: var(--text-3); cursor: pointer; }
+  .notes-submit { flex: 2; padding: 11px; background: var(--accent); border: none; color: white; border-radius: 8px; font-family: var(--mono); font-size: 12px; cursor: pointer; }
 
   /* ── MIXER MODE ── */
   .mixer {
@@ -639,15 +803,30 @@ const css = `
 
   /* Log */
   .log-row {
-    display: flex; align-items: center; gap: 10px;
-    padding: 8px 0; border-bottom: 1px solid var(--border-light); font-size: 12px;
+    border-bottom: 1px solid var(--border-light); font-size: 12px; cursor: pointer;
+    transition: background 0.1s;
   }
   .log-row:last-child { border-bottom: none; }
+  .log-row:hover { background: var(--bg); }
+  .log-row-main { display: flex; align-items: center; gap: 10px; padding: 8px 4px; }
   .log-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
   .log-dot.done { background: var(--accent); }
   .log-time { font-family: var(--mono); color: var(--text-3); width: 68px; flex-shrink: 0; }
   .log-pen { font-weight: 500; flex: 1; }
   .log-who { font-family: var(--mono); font-size: 11px; color: var(--text-3); }
+  .log-chevron { font-size: 10px; color: var(--text-3); transition: transform 0.15s; }
+  .log-chevron.open { transform: rotate(180deg); }
+  .log-actions {
+    display: flex; gap: 8px; padding: 0 4px 10px;
+  }
+  .log-action-btn {
+    flex: 1; padding: 8px; border-radius: 7px; font-family: var(--mono);
+    font-size: 11px; cursor: pointer; border: 1px solid var(--border);
+    background: none; transition: all 0.15s;
+  }
+  .log-action-btn.undo { color: var(--warn); border-color: var(--warn-light); background: var(--warn-light); }
+  .log-action-btn.delete { color: var(--danger); border-color: #FFCACA; background: #FFF0F0; }
+  .log-action-btn:hover { opacity: 0.75; }
   .empty-log { font-size: 12px; font-family: var(--mono); color: var(--text-3); padding: 12px 0; text-align: center; }
 
   .sync-dot {
@@ -946,7 +1125,7 @@ function MixerMode({ ingredients, totalLbs, onFinish, onCancel }) {
         </div>
         <div className="mixer-nav">
           <button className="mixer-btn back" onClick={() => setStep(0)}>↩</button>
-          <button className="mixer-btn finish" onClick={onFinish}>Mark as done</button>
+          <button className="mixer-btn finish" onClick={onFinish}>Mark as done →</button>
         </div>
       </div>
     );
@@ -1000,8 +1179,10 @@ function MixerMode({ ingredients, totalLbs, onFinish, onCancel }) {
 }
 
 function FeedCard({ pen, ration, event, onConfirm, feederName }) {
-  const [mode, setMode] = useState("card"); // "card" | "overview" | "mixing"
+  const [mode, setMode] = useState("card"); // "card" | "mixing"
   const [confirming, setConfirming] = useState(false);
+  const [showNotes, setShowNotes] = useState(false);
+  const [pendingConfirm, setPendingConfirm] = useState(null);
   const totalLbs = getTotalLbs(pen, ration);
   const isDone = event.status === "done";
   const ingredients = getIngredients(ration, pen.use_ddg, totalLbs);
@@ -1009,12 +1190,28 @@ function FeedCard({ pen, ration, event, onConfirm, feederName }) {
   async function handleConfirm() {
     if (isDone || confirming) return;
     setConfirming(true);
-    await onConfirm(event, feederName);
-    setConfirming(false);
+    // Show notes modal before finalizing
+    setPendingConfirm(true);
+    setShowNotes(true);
     setMode("card");
   }
 
+  async function handleNotesSubmit(notes) {
+    setShowNotes(false);
+    await onConfirm(event.id, feederName, notes);
+    setConfirming(false);
+    setPendingConfirm(null);
+  }
+
   return (
+    <>
+    {showNotes && (
+      <NotesModal
+        penName={pen.name}
+        timeOfDay={event.time_of_day}
+        onSubmit={handleNotesSubmit}
+      />
+    )}
     <div className={`feed-card${isDone ? " done" : ""}`}>
       <div className="feed-card-top">
         <div className="feed-card-info">
@@ -1049,10 +1246,84 @@ function FeedCard({ pen, ration, event, onConfirm, feederName }) {
         </button>
       </div>
     </div>
+    </>
   );
 }
 
-// ── FEEDER VIEW ───────────────────────────────────────────────────────────────
+// ── PIN SCREEN ───────────────────────────────────────────────────────────────
+
+const ADMIN_PIN = "2252";
+
+function PinScreen({ onUnlock }) {
+  const [entered, setEntered] = useState("");
+  const [error, setError] = useState(false);
+
+  function press(digit) {
+    if (entered.length >= 4) return;
+    const next = entered + digit;
+    setEntered(next);
+    setError(false);
+    if (next.length === 4) {
+      if (next === ADMIN_PIN) {
+        setTimeout(() => onUnlock(), 150);
+      } else {
+        setTimeout(() => { setError(true); setEntered(""); }, 300);
+      }
+    }
+  }
+
+  function del() { setEntered(p => p.slice(0, -1)); setError(false); }
+
+  return (
+    <div className="pin-screen">
+      <img src="/logo-white.png" alt="Triple B Farms" className="pin-logo" />
+      <div className="pin-title">Admin Access</div>
+      <div className="pin-dots">
+        {[0,1,2,3].map(i => (
+          <div key={i} className={`pin-dot${entered.length > i ? (error ? " error" : " filled") : ""}`} />
+        ))}
+      </div>
+      <div className="pin-error">{error ? "Incorrect PIN" : ""}</div>
+      <div className="pin-pad">
+        {[1,2,3,4,5,6,7,8,9].map(n => (
+          <button key={n} className="pin-btn" onClick={() => press(String(n))}>{n}</button>
+        ))}
+        <div />
+        <button className="pin-btn" onClick={() => press("0")}>0</button>
+        <button className="pin-btn del" onClick={del}>⌫</button>
+      </div>
+    </div>
+  );
+}
+
+// ── NOTES MODAL ──────────────────────────────────────────────────────────────
+
+function NotesModal({ penName, timeOfDay, onSubmit }) {
+  const [notes, setNotes] = useState("");
+
+  return (
+    <div className="notes-modal-backdrop">
+      <div className="notes-modal">
+        <div className="modal-handle" />
+        <div className="notes-modal-title">Feeding complete · {penName}</div>
+        <div className="notes-modal-sub">{timeOfDay === "AM" ? "Morning" : "Afternoon"} feed · Any notes to log?</div>
+        <textarea
+          className="notes-textarea"
+          placeholder="e.g. cattle seem off feed, noticed injury, gate left open..."
+          value={notes}
+          onChange={e => setNotes(e.target.value)}
+          autoFocus
+        />
+        <div className="notes-actions">
+          <button className="notes-skip" onClick={() => onSubmit("")}>Skip</button>
+          <button className="notes-submit" onClick={() => onSubmit(notes)}>
+            {notes.trim() ? "Save note" : "Done"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function getCurrentFeedPeriod() {
   const hour = new Date().getHours();
@@ -1252,38 +1523,65 @@ function PenCard({ pen, rations, schedule, onSave, onSaveSchedule }) {
 // ── ADMIN VIEW ────────────────────────────────────────────────────────────────
 
 
-function RationEditorCard({ ration, variant, onSave, onReset }) {
-  const [open, setOpen] = useState(false);
-  const [ingredients, setIngredients] = useState(
-    (variant === "ddg" ? ration.ingredients : ration.ingredients_no_ddg).map(i => ({ ...i }))
-  );
+// Legacy rations may still have %-based ingredients (pct of a pen's total lbs).
+// We only ever edit in fixed lbs now — this gives old % entries a starting lbs
+// number (pct × 100) so an admin can review and correct the real amount.
+function toLbsIngredient(i) {
+  return {
+    name: i.name || "",
+    lbs: i.lbs !== undefined ? Math.round((parseFloat(i.lbs) || 0) * 10) / 10 : Math.round((i.pct || 0) * 1000) / 10,
+  };
+}
+
+function RationCard({ ration, onSave, onDelete, isNew, onCancelNew, knownIngredients }) {
+  const [open, setOpen] = useState(!!isNew);
+  const [variant, setVariant] = useState("ddg"); // "ddg" | "no-ddg"
+  const [rationName, setRationName] = useState(ration.name || "");
+  const [timeOfDay, setTimeOfDay] = useState(ration.time_of_day || "AM");
+  const [ddgIngredients, setDdgIngredients] = useState((ration.ingredients || []).map(toLbsIngredient));
+  const [noDdgIngredients, setNoDdgIngredients] = useState((ration.ingredients_no_ddg || []).map(toLbsIngredient));
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
-  const [inputMode, setInputMode] = useState(ration.mode === "lbs" ? "lbs" : "pct");
-  const [rationName, setRationName] = useState(ration.name);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
-  // Sync name and mode if parent rations array updates
+  // Sync from parent when this (existing) ration changes externally
   useEffect(() => {
+    if (isNew) return;
     setRationName(ration.name);
-    const newMode = ration.mode === "lbs" ? "lbs" : "pct";
-    setInputMode(newMode);
-    if (newMode === "lbs") {
-      const list = variant === "ddg" ? ration.ingredients : ration.ingredients_no_ddg;
-      setIngredients((list || []).map(i => ({ ...i, _rawLbs: i.lbs || 0 })));
-    }
-  }, [ration.name, ration.mode]);
+    setTimeOfDay(ration.time_of_day);
+    setDdgIngredients((ration.ingredients || []).map(toLbsIngredient));
+    setNoDdgIngredients((ration.ingredients_no_ddg || []).map(toLbsIngredient));
+  }, [ration.id, ration.name, ration.time_of_day]);
 
+  const ingredients = variant === "ddg" ? ddgIngredients : noDdgIngredients;
+  const setIngredients = variant === "ddg" ? setDdgIngredients : setNoDdgIngredients;
   const baseIngredients = variant === "ddg" ? ration.base_ingredients : ration.base_ingredients_no_ddg;
-  const hasBase = !!baseIngredients;
-  const isModified = hasBase && JSON.stringify(ingredients) !== JSON.stringify(baseIngredients);
+  const hasBase = !isNew && !!baseIngredients;
 
-  const totalPct = Math.round(ingredients.reduce((s, i) => s + (parseFloat(i.pct) || 0), 0) * 100) / 100;
-  const pctOk = inputMode === "lbs" || Math.abs(totalPct - 1) < 0.005;
+  // Strip the transient "_custom" UI flag (marks a row as free-text entry) before
+  // saving or comparing against stored data.
+  function cleanIng(i) { return { name: i.name, lbs: parseFloat(i.lbs) || 0 }; }
 
-  function updateIng(idx, field, val) {
-    setIngredients(prev => prev.map((i, n) => n === idx ? { ...i, [field]: field === "pct" ? parseFloat(val) || 0 : val } : i));
+  const isModified = !isNew && (
+    (!!ration.base_ingredients && JSON.stringify(ddgIngredients.map(cleanIng)) !== JSON.stringify(ration.base_ingredients.map(toLbsIngredient))) ||
+    (!!ration.base_ingredients_no_ddg && JSON.stringify(noDdgIngredients.map(cleanIng)) !== JSON.stringify(ration.base_ingredients_no_ddg.map(toLbsIngredient)))
+  );
+
+  function updateName(idx, name) {
+    setIngredients(prev => prev.map((i, n) => n === idx ? { ...i, name } : i));
+    setSaved(false);
+  }
+
+  function setCustomRow(idx) {
+    setIngredients(prev => prev.map((i, n) => n === idx ? { ...i, name: "", _custom: true } : i));
+    setSaved(false);
+  }
+
+  function updateLbs(idx, val) {
+    setIngredients(prev => prev.map((i, n) => n === idx ? { ...i, lbs: parseFloat(val) || 0 } : i));
     setSaved(false);
   }
 
@@ -1293,178 +1591,214 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
   }
 
   function addIng() {
-    setIngredients(prev => [...prev, { name: "New ingredient", pct: 0 }]);
+    setIngredients(prev => [...prev, { name: "", lbs: 0 }]);
     setSaved(false);
   }
 
+  const nameOk = rationName.trim().length > 0;
+  const readyToCreate = isNew && nameOk && ddgIngredients.length > 0 && ddgIngredients.every(i => i.name.trim());
+
+  const dirty = isNew ||
+    rationName.trim() !== ration.name ||
+    timeOfDay !== ration.time_of_day ||
+    JSON.stringify(ddgIngredients.map(cleanIng)) !== JSON.stringify((ration.ingredients || []).map(toLbsIngredient)) ||
+    JSON.stringify(noDdgIngredients.map(cleanIng)) !== JSON.stringify((ration.ingredients_no_ddg || []).map(toLbsIngredient));
+
   async function handleSave() {
     setSaving(true);
-    const field = variant === "ddg" ? "ingredients" : "ingredients_no_ddg";
-
-    let finalIngredients;
-    if (inputMode === "lbs") {
-      // lbs Direct: store exact lbs — no percentage calculation
-      finalIngredients = ingredients.map(i => ({
-        name: i.name,
-        lbs: parseFloat(i._rawLbs) || 0,
-      }));
-    } else {
-      // pct mode: store clean percentages only
-      finalIngredients = ingredients.map(({ name, pct }) => ({ name, pct }));
-    }
-
-    const updates = {
-      [field]: finalIngredients,
-      mode: inputMode,
-      name: rationName.trim() || ration.name,
+    const payload = {
+      name: rationName.trim() || (isNew ? "Untitled ration" : ration.name),
+      time_of_day: timeOfDay,
+      mode: "lbs",
+      ingredients: ddgIngredients.map(cleanIng),
+      ingredients_no_ddg: noDdgIngredients.map(cleanIng),
     };
-    await onSave(ration.id, updates);
-    setIngredients(finalIngredients);
-    setSaving(false);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+
+    try {
+      if (isNew) {
+        await onSave(payload);
+      } else {
+        await onSave(ration.id, payload);
+        setSaved(true);
+        setTimeout(() => setSaved(false), 2000);
+      }
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function handleReset() {
     if (!confirmReset) { setConfirmReset(true); return; }
     setResetting(true);
     const field = variant === "ddg" ? "ingredients" : "ingredients_no_ddg";
-    await onSave(ration.id, {
-      [field]: baseIngredients,
-    });
-    setIngredients(baseIngredients.map(i => ({ ...i })));
+    const resetLbs = baseIngredients.map(toLbsIngredient);
+    await onSave(ration.id, { [field]: resetLbs, mode: "lbs" });
+    setIngredients(resetLbs);
     setResetting(false);
     setConfirmReset(false);
     setSaved(false);
   }
 
-  const dirty = JSON.stringify(ingredients) !== JSON.stringify(
-    (variant === "ddg" ? ration.ingredients : ration.ingredients_no_ddg)
-  ) || rationName.trim() !== ration.name;
+  async function handleDelete() {
+    if (!confirmDelete) { setConfirmDelete(true); return; }
+    setDeleting(true);
+    await onDelete(ration.id);
+  }
+
+  const totalLbs = Math.round(ingredients.reduce((s, i) => s + (parseFloat(i.lbs) || 0), 0) * 10) / 10;
 
   return (
-    <div className="ration-editor-card">
-      <div className="ration-editor-header" onClick={() => { setOpen(o => !o); setConfirmReset(false); }}>
-        <div>
-          <div className="ration-editor-title">
-            {variant === "ddg" ? rationName : `${rationName} · No DDG`}
-            {isModified && <span style={{ marginLeft: 8, fontSize: 10, fontFamily: "var(--mono)", color: "var(--warn)", background: "var(--warn-light)", padding: "2px 6px", borderRadius: 4 }}>modified</span>}
+    <div className={`ration-editor-card${isNew ? " new" : ""}`}>
+      <div
+        className="ration-editor-header"
+        style={isNew ? { cursor: "default" } : undefined}
+        onClick={() => { if (isNew) return; setOpen(o => !o); setConfirmReset(false); setConfirmDelete(false); }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {!isNew && <span className={`ration-time-tag ${(timeOfDay || "").toLowerCase()}`}>{timeOfDay}</span>}
+          <div>
+            <div className="ration-editor-title">
+              {isNew ? "New ration" : rationName}
+              {isModified && <span style={{ marginLeft: 8, fontSize: 10, fontFamily: "var(--mono)", color: "var(--warn)", background: "var(--warn-light)", padding: "2px 6px", borderRadius: 4 }}>modified</span>}
+            </div>
+            {!isNew && (
+              <div className="ration-editor-meta">{ddgIngredients.length} DDG · {noDdgIngredients.length} No DDG</div>
+            )}
           </div>
-          <div className="ration-editor-meta">{ingredients.length} ingredients</div>
         </div>
-        <span className={`ration-editor-chevron${open ? " open" : ""}`}>▼</span>
+        {isNew ? (
+          <button className="ration-delete-btn" onClick={onCancelNew}>✕</button>
+        ) : (
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <button
+              className="ration-delete-btn"
+              onClick={e => { e.stopPropagation(); handleDelete(); }}
+              disabled={deleting}
+              title="Delete ration"
+            >
+              {confirmDelete ? "⚠" : "🗑"}
+            </button>
+            <span className={`ration-editor-chevron${open ? " open" : ""}`}>▼</span>
+          </div>
+        )}
       </div>
 
-      {open && (
+      {(open || isNew) && (
         <div className="ration-editor-body">
-          {variant === "ddg" && (
-            <div className="field-row" style={{ marginBottom: 10 }}>
-              <span className="field-label">Ration name</span>
-              <input
-                className="field-input"
-                value={rationName}
-                onChange={e => { setRationName(e.target.value); setSaved(false); }}
-                placeholder="e.g. Starter AM"
-              />
-            </div>
-          )}
-          <div className="input-mode-toggle">
-            <button className={`input-mode-btn${inputMode === "pct" ? " active" : ""}`} onClick={() => setInputMode("pct")}>% Percentage</button>
-            <button className={`input-mode-btn${inputMode === "lbs" ? " active" : ""}`} onClick={() => {
-              setIngredients(prev => prev.map(i => ({
-                ...i,
-                _rawLbs: i.lbs !== undefined ? i.lbs : Math.round(i.pct * 1000) / 10
-              })));
-              setInputMode("lbs");
-            }}>lbs Direct</button>
+          <div className="field-row" style={{ marginTop: 10 }}>
+            <span className="field-label">Ration name</span>
+            <input
+              className="field-input"
+              value={rationName}
+              onChange={e => { setRationName(e.target.value); setSaved(false); }}
+              placeholder="e.g. Starter"
+            />
+          </div>
+          <div className="field-row">
+            <span className="field-label">Feed time</span>
+            <select className="field-select" value={timeOfDay} onChange={e => { setTimeOfDay(e.target.value); setSaved(false); }}>
+              <option value="AM">AM</option>
+              <option value="PM">PM</option>
+            </select>
           </div>
 
-          <div className="ration-field-row header">
+          <div className="variant-toggle">
+            <button className={`variant-btn${variant === "ddg" ? " active" : ""}`} onClick={() => setVariant("ddg")}>With DDG</button>
+            <button className={`variant-btn${variant === "no-ddg" ? " active" : ""}`} onClick={() => setVariant("no-ddg")}>No DDG</button>
+          </div>
+
+          {variant === "no-ddg" && noDdgIngredients.length === 0 && ddgIngredients.length > 0 && (
+            <button className="ration-add-btn" style={{ marginBottom: 10 }}
+              onClick={() => setNoDdgIngredients(ddgIngredients.map(i => ({ ...i })))}>
+              ⧉ Copy ingredients from "With DDG"
+            </button>
+          )}
+
+          <div className="ration-field-row header" style={{ gridTemplateColumns: "1fr 90px 28px" }}>
             <span>Ingredient</span>
-            <span style={{textAlign:"right"}}>{inputMode === "pct" ? "%" : "lbs"}</span>
-            <span style={{textAlign:"right"}}>{inputMode === "pct" ? "lbs" : "%"}</span>
+            <span style={{textAlign:"right"}}>Lbs</span>
             <span></span>
           </div>
 
-          {(() => {
-            const totalRaw = inputMode === "lbs"
-              ? ingredients.reduce((s, i) => s + (parseFloat(i._rawLbs) || 0), 0)
-              : 0;
-            return ingredients.map((ing, idx) => {
-            const pctDisplay = inputMode === "lbs" && totalRaw > 0
-              ? Math.round((parseFloat(ing._rawLbs) || 0) / totalRaw * 1000) / 10
-              : Math.round(ing.pct * 1000) / 10;
+          {ingredients.map((ing, idx) => {
+            const isCustomRow = ing._custom || (ing.name !== "" && !knownIngredients.includes(ing.name));
             return (
-              <div className="ration-field-row" key={idx}>
-                <input
-                  className="ration-ing-input" style={{ textAlign: "left" }}
-                  value={ing.name}
-                  onChange={e => updateIng(idx, "name", e.target.value)}
-                />
-                {inputMode === "pct" ? (
-                  <>
-                    <input
-                      className="ration-ing-input"
-                      type="number" min="0" max="100" step="0.1"
-                      value={pctDisplay}
-                      onChange={e => updateIng(idx, "pct", parseFloat(e.target.value) / 100 || 0)}
-                    />
-                    <span style={{ textAlign: "right", fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-2)" }}>{pctDisplay}%</span>
-                  </>
+              <div className="ration-field-row" style={{ gridTemplateColumns: "1fr 90px 28px" }} key={idx}>
+                {isCustomRow ? (
+                  <input
+                    className="ration-ing-input" style={{ textAlign: "left" }}
+                    value={ing.name}
+                    autoFocus
+                    placeholder="New ingredient name"
+                    onChange={e => updateName(idx, e.target.value)}
+                  />
                 ) : (
-                  <>
-                    <input
-                      className="ration-ing-input"
-                      type="number" min="0" step="0.1"
-                      value={ing._rawLbs !== undefined ? ing._rawLbs : Math.round(ing.pct * 1000) / 10}
-                      onChange={e => {
-                        const newLbs = parseFloat(e.target.value) || 0;
-                        updateIng(idx, "_rawLbs", newLbs);
-                      }}
-                    />
-                    <span style={{ textAlign: "right", fontFamily: "var(--mono)", fontSize: 12, color: "var(--text-2)" }}>{pctDisplay}%</span>
-                  </>
+                  <select
+                    className="ration-ing-input" style={{ textAlign: "left" }}
+                    value={ing.name}
+                    onChange={e => {
+                      if (e.target.value === "__custom__") setCustomRow(idx);
+                      else updateName(idx, e.target.value);
+                    }}
+                  >
+                    <option value="" disabled>Select ingredient…</option>
+                    {knownIngredients.map(name => <option key={name} value={name}>{name}</option>)}
+                    <option value="__custom__">+ Add new ingredient…</option>
+                  </select>
                 )}
+                <input
+                  className="ration-ing-input"
+                  type="number" min="0" step="0.1"
+                  value={ing.lbs}
+                  onChange={e => updateLbs(idx, e.target.value)}
+                />
                 <button className="ration-remove-btn" onClick={() => removeIng(idx)}>×</button>
               </div>
             );
-            });
-          })()}
+          })}
 
           <button className="ration-add-btn" onClick={addIng}>+ Add ingredient</button>
 
-          {inputMode === "pct" && (
-            <div className={`pct-warning ${pctOk ? "ok" : "warn"}`}>
-              {pctOk ? "✓ Percentages sum to 100%" : `⚠ Percentages sum to ${Math.round(totalPct * 100)}% — must equal 100%`}
-            </div>
-          )}
-          {inputMode === "lbs" && (
-            <div className="pct-warning ok">
-              Exact lbs stored — feeder mixes these exact amounts, no pen total needed
-            </div>
-          )}
+          <div className="pct-warning ok">Total: {totalLbs} lbs · exact amounts, no pen total needed</div>
 
-          {dirty && (
-            <button className="save-btn" onClick={handleSave} disabled={saving || !pctOk}>
-              {saving ? "Saving…" : "Save ration"}
-            </button>
-          )}
-          {saved && <div className="saved-badge">✓ Saved</div>}
+          {isNew ? (
+            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+              <button className="modal-cancel" style={{ flex: 1 }} onClick={onCancelNew}>Cancel</button>
+              <button className="save-btn" style={{ flex: 2, marginTop: 0 }} onClick={handleSave} disabled={saving || !readyToCreate}>
+                {saving ? "Creating…" : "Create ration"}
+              </button>
+            </div>
+          ) : (
+            <>
+              {dirty && (
+                <button className="save-btn" onClick={handleSave} disabled={saving}>
+                  {saving ? "Saving…" : "Save ration"}
+                </button>
+              )}
+              {saved && <div className="saved-badge">✓ Saved</div>}
 
-          {hasBase && (
-            <button
-              onClick={handleReset}
-              disabled={resetting}
-              style={{
-                width: "100%", marginTop: 8, padding: "8px",
-                background: "none", border: `1px solid ${confirmReset ? "#8B1A1A" : "var(--border)"}`,
-                borderRadius: 8, fontFamily: "var(--mono)", fontSize: 12,
-                color: confirmReset ? "#8B1A1A" : "var(--text-3)",
-                cursor: "pointer", transition: "all 0.15s",
-              }}
-            >
-              {resetting ? "Resetting…" : confirmReset ? "⚠ Tap again to confirm reset to base ration" : "↩ Reset to base ration"}
-            </button>
+              {hasBase && (
+                <button
+                  onClick={handleReset}
+                  disabled={resetting}
+                  style={{
+                    width: "100%", marginTop: 8, padding: "8px",
+                    background: "none", border: `1px solid ${confirmReset ? "#8B1A1A" : "var(--border)"}`,
+                    borderRadius: 8, fontFamily: "var(--mono)", fontSize: 12,
+                    color: confirmReset ? "#8B1A1A" : "var(--text-3)",
+                    cursor: "pointer", transition: "all 0.15s",
+                  }}
+                >
+                  {resetting ? "Resetting…" : confirmReset ? `⚠ Tap again to confirm reset (${variant === "ddg" ? "DDG" : "No DDG"})` : `↩ Reset ${variant === "ddg" ? "DDG" : "No DDG"} to base`}
+                </button>
+              )}
+
+              {confirmDelete && (
+                <div style={{ marginTop: 8, fontSize: 11, fontFamily: "var(--mono)", color: "var(--danger)", textAlign: "center" }}>
+                  Tap 🗑 again to permanently delete this ration
+                </div>
+              )}
+            </>
           )}
         </div>
       )}
@@ -1472,8 +1806,22 @@ function RationEditorCard({ ration, variant, onSave, onReset }) {
   );
 }
 
-function AdminView({ pens, rations, events, penSchedules, onSavePen, onSaveSchedule, onSaveRation }) {
+function AdminView({ pens, rations, events, penSchedules, onSavePen, onSaveSchedule, onSaveRation, onCreateRation, onDeleteRation, onUndoEvent, onDeleteEvent }) {
   const [tab, setTab] = useState("pens");
+  const [creatingNew, setCreatingNew] = useState(false);
+
+  // Known ingredient names across every ration (DDG, No-DDG, and base formulas) —
+  // powers the ingredient dropdown so admins pick from what's already in use.
+  const knownIngredients = useMemo(() => {
+    const set = new Set();
+    rations.forEach(r => {
+      [r.ingredients, r.ingredients_no_ddg, r.base_ingredients, r.base_ingredients_no_ddg].forEach(list => {
+        (list || []).forEach(i => { if (i?.name) set.add(i.name); });
+      });
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [rations]);
+  const [expandedLog, setExpandedLog] = useState(null);
   const doneCount = events.filter(e => e.status === "done").length;
   const pendingCount = events.length - doneCount;
   const doneEvents = [...events].filter(e => e.status === "done")
@@ -1482,7 +1830,7 @@ function AdminView({ pens, rations, events, penSchedules, onSavePen, onSaveSched
   return (
     <div className="content">
       <div className="nav" style={{ margin: "0 -16px 16px", borderTop: "1px solid var(--border)" }}>
-        {[["pens","Pen Setup"],["rations","Rations"],["log","Today's Log"]].map(([t,label]) => (
+        {[["pens","Pen Setup"],["rations","Rations"],["log","Today's Log"],["notes","Notes"]].map(([t,label]) => (
           <button key={t} className={`nav-tab${tab === t ? " active" : ""}`} onClick={() => setTab(t)}>
             {label}
           </button>
@@ -1519,12 +1867,28 @@ function AdminView({ pens, rations, events, penSchedules, onSavePen, onSaveSched
             ) : (
               doneEvents.map(ev => {
                 const pen = pens.find(p => p.id === ev.pen_id);
+                const isExpanded = expandedLog === ev.id;
                 return (
-                  <div className="log-row" key={ev.id}>
-                    <div className="log-dot done" />
-                    <span className="log-time">{fmtTime(ev.confirmed_at)}</span>
-                    <span className="log-pen">{pen?.name} · {ev.time_of_day}</span>
-                    <span className="log-who">{ev.confirmed_by}</span>
+                  <div className="log-row" key={ev.id} onClick={() => setExpandedLog(isExpanded ? null : ev.id)}>
+                    <div className="log-row-main">
+                      <div className="log-dot done" />
+                      <span className="log-time">{fmtTime(ev.confirmed_at)}</span>
+                      <span className="log-pen">{pen?.name} · {ev.time_of_day}</span>
+                      <span className="log-who">{ev.confirmed_by}</span>
+                      <span className={`log-chevron${isExpanded ? " open" : ""}`}>▼</span>
+                    </div>
+                    {isExpanded && (
+                      <div className="log-actions" onClick={e => e.stopPropagation()}>
+                        <button className="log-action-btn undo" onClick={() => {
+                          onUndoEvent(ev.id);
+                          setExpandedLog(null);
+                        }}>↩ Undo</button>
+                        <button className="log-action-btn delete" onClick={() => {
+                          onDeleteEvent(ev.id);
+                          setExpandedLog(null);
+                        }}>✕ Delete</button>
+                      </div>
+                    )}
                   </div>
                 );
               })
@@ -1533,15 +1897,57 @@ function AdminView({ pens, rations, events, penSchedules, onSavePen, onSaveSched
         </div>
       )}
 
+      {tab === "notes" && (
+        <div className="admin-section">
+          <div className="admin-section-title">Feeder notes log</div>
+          <div className="pen-admin-card">
+            {events.filter(e => e.notes).length === 0 ? (
+              <div className="empty-log">No notes recorded yet</div>
+            ) : (
+              [...events]
+                .filter(e => e.notes)
+                .sort((a, b) => new Date(b.confirmed_at) - new Date(a.confirmed_at))
+                .map(ev => {
+                  const pen = pens.find(p => p.id === ev.pen_id);
+                  return (
+                    <div key={ev.id} style={{ padding: "10px 0", borderBottom: "1px solid var(--border-light)" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                        <span style={{ fontSize: 13, fontWeight: 500 }}>{pen?.name} · {ev.time_of_day}</span>
+                        <span style={{ fontSize: 11, fontFamily: "var(--mono)", color: "var(--text-3)" }}>{fmtTime(ev.confirmed_at)}</span>
+                      </div>
+                      <div style={{ fontSize: 11, fontFamily: "var(--mono)", color: "var(--text-3)", marginBottom: 4 }}>
+                        {ev.confirmed_by} · {new Date(ev.confirmed_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                      </div>
+                      <div style={{ fontSize: 13, color: "var(--text-2)", lineHeight: 1.5 }}>{ev.notes}</div>
+                    </div>
+                  );
+                })
+            )}
+          </div>
+        </div>
+      )}
+
       {tab === "rations" && (
         <div className="admin-section">
           <div className="admin-section-title">Ration formulas</div>
+
+          {creatingNew && (
+            <RationCard
+              ration={{ name: "", time_of_day: "AM", mode: "lbs", ingredients: [], ingredients_no_ddg: [] }}
+              isNew
+              knownIngredients={knownIngredients}
+              onSave={async payload => { await onCreateRation(payload); setCreatingNew(false); }}
+              onCancelNew={() => setCreatingNew(false)}
+            />
+          )}
+
           {rations.map(r => (
-            <div key={r.id}>
-              <RationEditorCard ration={r} variant="ddg" onSave={onSaveRation} />
-              <RationEditorCard ration={r} variant="no-ddg" onSave={onSaveRation} />
-            </div>
+            <RationCard key={r.id} ration={r} onSave={onSaveRation} onDelete={onDeleteRation} knownIngredients={knownIngredients} />
           ))}
+
+          {!creatingNew && (
+            <button className="new-ration-btn" onClick={() => setCreatingNew(true)}>+ New ration</button>
+          )}
         </div>
       )}
     </div>
@@ -1573,54 +1979,19 @@ function removeFromQueue(eventId) {
   saveQueue(queue);
 }
 
-const REAL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-// Placeholder ids (used when no real feed_events row exists yet) look like
-// "<pen_id>-AM" / "<pen_id>-PM". Recover pen/period from them so a queued
-// confirmation can still be healed even if it was queued before this fix.
-function parsePlaceholderId(id) {
-  const m = /^(.+)-(AM|PM)$/.exec(id || "");
-  return m ? { penId: m[1], timeOfDay: m[2] } : null;
-}
-
 async function flushQueue(setEvents) {
   const queue = loadQueue();
   if (queue.length === 0) return;
   for (const item of queue) {
     try {
-      let eventId = item.eventId;
-      if (!REAL_ID_RE.test(eventId)) {
-        // No real row existed yet when this was queued — (re)generate today's
-        // events from the schedule and look up the real id.
-        const parsed = parsePlaceholderId(item.eventId);
-        const penId = item.penId || parsed?.penId;
-        const timeOfDay = item.timeOfDay || parsed?.timeOfDay;
-        await db.generateTodayEvents();
-        const fresh = await db.getTodayEvents();
-        const real = (fresh || []).find(e => e.pen_id === penId && e.time_of_day === timeOfDay);
-        if (!real) {
-          // Can't be healed (pen/period no longer scheduled) — drop it instead
-          // of retrying forever.
-          removeFromQueue(item.eventId);
-          continue;
-        }
-        eventId = real.id;
-        if (fresh) setEvents(fresh);
-      }
-      await db.confirmEvent(eventId, item.confirmedBy);
+      await db.confirmEvent(item.eventId, item.confirmedBy);
       removeFromQueue(item.eventId);
       setEvents(prev => prev.map(e =>
-        e.id === eventId
+        e.id === item.eventId
           ? { ...e, status: "done", confirmed_by: item.confirmedBy, confirmed_at: item.confirmedAt }
           : e
       ));
-    } catch (err) {
-      // A real (non-network) rejection will never succeed by retrying —
-      // drop it so the queue doesn't sit "syncing" forever.
-      if (err && err.isNetworkError === false) {
-        removeFromQueue(item.eventId);
-      }
-    }
+    } catch {}
   }
 }
 
@@ -1628,6 +1999,7 @@ async function flushQueue(setEvents) {
 
 export default function App() {
   const [role, setRole] = useState("feeder");
+  const [pinUnlocked, setPinUnlocked] = useState(false);
   const [pens, setPens] = useState([]);
   const [rations, setRations] = useState([]);
   const [events, setEvents] = useState([]);
@@ -1720,61 +2092,43 @@ export default function App() {
     return unsub;
   }, []);
 
-  const confirmEvent = useCallback(async (event, feederName) => {
+  const confirmEvent = useCallback(async (eventId, feederName, notes) => {
     const confirmedAt = new Date().toISOString();
-    const isRealId = REAL_ID_RE.test(event.id);
+    const isFakeId = !eventId || eventId.includes("-AM") || eventId.includes("-PM");
 
-    // Optimistic update immediately, if we already have a real row for it
-    if (isRealId) {
-      setEvents(prev => prev.map(e =>
-        e.id === event.id
-          ? { ...e, status: "done", confirmed_by: feederName, confirmed_at: confirmedAt }
-          : e
-      ));
-    }
+    // Optimistic update immediately
+    setEvents(prev => prev.map(e =>
+      e.id === eventId
+        ? { ...e, status: "done", confirmed_by: feederName, confirmed_at: confirmedAt, notes: notes || null }
+        : e
+    ));
 
-    if (!navigator.onLine) {
-      // Genuinely offline — queue for later, carrying pen/period so it can be
-      // healed on flush even if no real event row exists yet.
-      addToQueue({ eventId: event.id, penId: event.pen_id, timeOfDay: event.time_of_day, confirmedBy: feederName, confirmedAt });
-      setOfflinePending(prev => prev + 1);
-      return;
-    }
-
-    try {
-      let eventId = event.id;
-      if (!isRealId) {
-        // No real feed_events row yet — a schedule was likely added after
-        // today's events were generated. Regenerate and look up the real row.
-        await db.generateTodayEvents();
-        const fresh = await db.getTodayEvents();
-        const real = (fresh || []).find(e => e.pen_id === event.pen_id && e.time_of_day === event.time_of_day);
-        if (!real) {
-          const err = new Error("No feeding is scheduled for this pen/period today.");
-          err.isNetworkError = false;
-          throw err;
+    if (navigator.onLine) {
+      try {
+        if (isFakeId) {
+          // No real event exists yet — parse penId and timeOfDay from fake ID
+          const parts = eventId.split("-");
+          const timeOfDay = parts[parts.length - 1]; // "AM" or "PM"
+          const penId = parts.slice(0, parts.length - 1).join("-");
+          const result = await db.createAndConfirmEvent(penId, timeOfDay, feederName, notes);
+          // Update events with the real event from DB
+          if (result?.[0]) {
+            setEvents(prev => {
+              const filtered = prev.filter(e => e.id !== eventId);
+              return [...filtered, result[0]];
+            });
+          }
+        } else {
+          await db.confirmEvent(eventId, feederName, notes);
         }
-        eventId = real.id;
-        if (fresh) setEvents(fresh);
-      }
-      await db.confirmEvent(eventId, feederName);
-      setEvents(prev => prev.map(e =>
-        e.id === eventId
-          ? { ...e, status: "done", confirmed_by: feederName, confirmed_at: confirmedAt }
-          : e
-      ));
-      removeFromQueue(event.id);
-    } catch (err) {
-      if (err && err.isNetworkError !== false) {
-        // Truly a connectivity failure — queue it, this is the legitimate offline path.
-        addToQueue({ eventId: event.id, penId: event.pen_id, timeOfDay: event.time_of_day, confirmedBy: feederName, confirmedAt });
+        removeFromQueue(eventId);
+      } catch {
+        addToQueue({ eventId, confirmedBy: feederName, confirmedAt });
         setOfflinePending(prev => prev + 1);
-      } else {
-        // A real server-side rejection — retrying won't fix it, so surface it
-        // instead of silently queuing forever.
-        setError(err.message || "Failed to confirm feeding. Try again.");
-        setTimeout(() => setError(null), 4000);
       }
+    } else {
+      addToQueue({ eventId, confirmedBy: feederName, confirmedAt });
+      setOfflinePending(prev => prev + 1);
     }
   }, []);
 
@@ -1788,6 +2142,30 @@ export default function App() {
     }
   }, []);
 
+  const undoEvent = useCallback(async (eventId) => {
+    try {
+      await db.undoEvent(eventId);
+      setEvents(prev => prev.map(e =>
+        e.id === eventId
+          ? { ...e, status: "pending", confirmed_by: null, confirmed_at: null, notes: null }
+          : e
+      ));
+    } catch (err) {
+      setError("Failed to undo. Try again.");
+      setTimeout(() => setError(null), 3000);
+    }
+  }, []);
+
+  const deleteEvent = useCallback(async (eventId) => {
+    try {
+      await db.deleteEvent(eventId);
+      setEvents(prev => prev.filter(e => e.id !== eventId));
+    } catch (err) {
+      setError("Failed to delete. Try again.");
+      setTimeout(() => setError(null), 3000);
+    }
+  }, []);
+
   const saveRation = useCallback(async (rationId, updates) => {
     try {
       await db.updateRation(rationId, updates);
@@ -1796,6 +2174,28 @@ export default function App() {
       if (fresh) setRations(fresh);
     } catch (err) {
       setError("Failed to save ration. Try again.");
+      setTimeout(() => setError(null), 3000);
+    }
+  }, []);
+
+  const createRation = useCallback(async (payload) => {
+    try {
+      await db.createRation(payload);
+      const fresh = await db.getRations();
+      if (fresh) setRations(fresh);
+    } catch (err) {
+      setError("Failed to create ration. Try again.");
+      setTimeout(() => setError(null), 3000);
+      throw err;
+    }
+  }, []);
+
+  const deleteRation = useCallback(async (rationId) => {
+    try {
+      await db.deleteRation(rationId);
+      setRations(prev => prev.filter(r => r.id !== rationId));
+    } catch (err) {
+      setError("Failed to delete ration. Try again.");
       setTimeout(() => setError(null), 3000);
     }
   }, []);
@@ -1840,8 +2240,15 @@ export default function App() {
             <img src="/logo-white.png" alt="Triple B Farms" className="header-logo" />
             <div className="header-date">{todayStr()}</div>
           </div>
-          <button className="role-badge" onClick={() => setRole(r => r === "feeder" ? "admin" : "feeder")}>
-            {role === "feeder" ? "Feeder ↓" : "Admin ↓"}
+          <button className="role-badge" onClick={() => {
+            if (role === "feeder") {
+              if (pinUnlocked) { setRole("admin"); }
+              else { setRole("pin"); }
+            } else {
+              setRole("feeder"); setPinUnlocked(false);
+            }
+          }}>
+            {role === "feeder" ? "Admin" : role === "pin" ? "↩ Cancel" : "Exit Admin"}
           </button>
         </div>
 
@@ -1860,10 +2267,14 @@ export default function App() {
         )}
         {error && <div className="error-bar">{error}</div>}
 
-        {role === "feeder" ? (
+        {role === "feeder" && (
           <FeederView pens={pens} rations={rations} events={events} feeders={feeders} todaySchedule={todaySchedule} onConfirm={confirmEvent} />
-        ) : (
-          <AdminView pens={pens} rations={rations} events={events} penSchedules={penSchedules} onSavePen={savePen} onSaveSchedule={saveSchedule} onSaveRation={saveRation} />
+        )}
+        {role === "pin" && (
+          <PinScreen onUnlock={() => { setPinUnlocked(true); setRole("admin"); }} />
+        )}
+        {role === "admin" && (
+          <AdminView pens={pens} rations={rations} events={events} penSchedules={penSchedules} onSavePen={savePen} onSaveSchedule={saveSchedule} onSaveRation={saveRation} onCreateRation={createRation} onDeleteRation={deleteRation} onUndoEvent={undoEvent} onDeleteEvent={deleteEvent} />
         )}
       </div>
     </>
