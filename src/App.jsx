@@ -13,13 +13,26 @@ const headers = {
 };
 
 async function sbFetch(path, options = {}) {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1${path}`, {
-    ...options,
-    headers: { ...headers, ...options.headers },
-  });
+  let res;
+  try {
+    res = await fetch(`${SUPABASE_URL}/rest/v1${path}`, {
+      ...options,
+      headers: { ...headers, ...options.headers },
+    });
+  } catch (networkErr) {
+    // fetch() itself threw — no response at all, i.e. genuinely offline/unreachable.
+    const err = new Error(networkErr.message || "Network request failed");
+    err.isNetworkError = true;
+    throw err;
+  }
   if (!res.ok) {
-    const err = await res.text();
-    throw new Error(err);
+    // Server responded but rejected the request (bad data, missing row, etc.) —
+    // this is NOT a connectivity problem, retrying won't help.
+    const body = await res.text();
+    const err = new Error(body || `Request failed (${res.status})`);
+    err.isNetworkError = false;
+    err.status = res.status;
+    throw err;
   }
   const text = await res.text();
   return text ? JSON.parse(text) : null;
@@ -52,16 +65,21 @@ const db = {
   // Schedule: upsert pen config for specific dates
   getPenSchedule: (penId) =>
     sbFetch(`/pen_schedule?pen_id=eq.${penId}&date=gte.${new Date().toISOString().split("T")[0]}&order=date`),
+  // Conflict target includes time_of_day so AM and PM schedules for the same
+  // pen+date are separate rows instead of overwriting each other. Requires the
+  // pen_schedule table to have a unique constraint on (pen_id, date, time_of_day).
   upsertPenSchedule: (rows) =>
-    sbFetch("/pen_schedule?on_conflict=pen_id,date", {
+    sbFetch("/pen_schedule?on_conflict=pen_id,date,time_of_day", {
       method: "POST",
       headers: { "Prefer": "resolution=merge-duplicates,return=representation" },
       body: JSON.stringify(rows),
     }),
-  deletePenSchedule: (penId, dates) =>
-    sbFetch(`/pen_schedule?pen_id=eq.${penId}&date=in.(${dates.join(",")})`, {
+  deletePenSchedule: (penId, dates, timeOfDay) => {
+    const todFilter = timeOfDay ? `&time_of_day=eq.${timeOfDay}` : "";
+    return sbFetch(`/pen_schedule?pen_id=eq.${penId}&date=in.(${dates.join(",")})${todFilter}`, {
       method: "DELETE",
-    }),
+    });
+  },
   updateRation: (id, updates) =>
     sbFetch(`/rations?id=eq.${id}`, {
       method: "PATCH",
@@ -80,9 +98,16 @@ function subscribeRealtime(table, onChange) {
   const ws = new WebSocket(url);
   const topic = `realtime:public:${table}`;
   let heartbeat;
+  let closed = false;
+
+  function safeSend(msg) {
+    if (!closed && ws.readyState === WebSocket.OPEN) {
+      try { ws.send(msg); } catch (_) {}
+    }
+  }
 
   ws.onopen = () => {
-    ws.send(JSON.stringify({ topic, event: "phx_join", payload: {
+    safeSend(JSON.stringify({ topic, event: "phx_join", payload: {
       config: { broadcast: { self: false }, presence: { key: "" } }
     }, ref: "1" }));
   };
@@ -91,15 +116,18 @@ function subscribeRealtime(table, onChange) {
     try {
       const data = JSON.parse(msg.data);
       if (["INSERT","UPDATE","DELETE"].includes(data.event)) onChange(data);
-      if (data.event === "phx_reply" && data.payload?.status === "ok") {
+      if (data.event === "phx_reply" && data.payload?.status === "ok" && !heartbeat) {
         heartbeat = setInterval(() =>
-          ws.send(JSON.stringify({ topic: "phoenix", event: "heartbeat", payload: {}, ref: "hb" }))
+          safeSend(JSON.stringify({ topic: "phoenix", event: "heartbeat", payload: {}, ref: "hb" }))
         , 25000);
       }
     } catch (_) {}
   };
 
-  return () => { clearInterval(heartbeat); ws.close(); };
+  ws.onclose = () => { closed = true; clearInterval(heartbeat); };
+  ws.onerror = () => { closed = true; clearInterval(heartbeat); };
+
+  return () => { closed = true; clearInterval(heartbeat); if (ws.readyState !== WebSocket.CLOSED) ws.close(); };
 }
 
 // ── HELPERS ───────────────────────────────────────────────────────────────────
@@ -727,9 +755,13 @@ function CalendarModal({ pen, rations, existingSchedule, timeOfDay, onSave, onCl
   const [useDdg, setUseDdg] = useState(pen.use_ddg);
   const [saving, setSaving] = useState(false);
 
-  // Pre-mark dates that already have a schedule
+  // Pre-mark dates that already have a schedule for this AM/PM period.
+  // Prefer the schedule row's own time_of_day (set at scheduling time); fall back
+  // to the linked ration's time_of_day for older rows saved before that column existed.
   const scheduledMap = {};
-  (existingSchedule || []).filter(s => s.pen_id === pen.id && rations.find(r => r.id === s.ration_id)?.time_of_day === timeOfDay).forEach(s => { scheduledMap[s.date] = s; });
+  (existingSchedule || [])
+    .filter(s => s.pen_id === pen.id && (s.time_of_day || rations.find(r => r.id === s.ration_id)?.time_of_day) === timeOfDay)
+    .forEach(s => { scheduledMap[s.date] = s; });
 
   const monthName = new Date(viewYear, viewMonth).toLocaleDateString("en-US", { month: "long", year: "numeric" });
   const daysInMonth = getDaysInMonth(viewYear, viewMonth);
@@ -757,7 +789,7 @@ function CalendarModal({ pen, rations, existingSchedule, timeOfDay, onSave, onCl
     if (selectedDates.size === 0) return;
     setSaving(true);
     const rows = [...selectedDates].map(date => ({
-      pen_id: pen.id, date, ration_id: rationId, use_ddg: useDdg,
+      pen_id: pen.id, date, ration_id: rationId, use_ddg: useDdg, time_of_day: timeOfDay,
     }));
     await onSave(pen.id, rows);
     setSaving(false);
@@ -977,7 +1009,7 @@ function FeedCard({ pen, ration, event, onConfirm, feederName }) {
   async function handleConfirm() {
     if (isDone || confirming) return;
     setConfirming(true);
-    await onConfirm(event.id, feederName);
+    await onConfirm(event, feederName);
     setConfirming(false);
     setMode("card");
   }
@@ -1048,7 +1080,8 @@ function FeederView({ pens, rations, events, feeders, todaySchedule, onConfirm }
     const pen = pens.find(p => p.id === s.pen_id);
     if (!pen || !pen.is_active) return false;
     const ration = rations.find(r => r.id === s.ration_id);
-    return ration?.time_of_day === feedPeriod;
+    const period = s.time_of_day || ration?.time_of_day;
+    return period === feedPeriod;
   });
 
   // Match schedule entries to feed events for confirmation state
@@ -1136,8 +1169,8 @@ function PenCard({ pen, rations, schedule, onSave, onSaveSchedule }) {
     setTimeout(() => setSaved(false), 2000);
   }
 
-  const amUpcoming = (schedule || []).filter(s => rations.find(r => r.id === s.ration_id)?.time_of_day === "AM").length;
-  const pmUpcoming = (schedule || []).filter(s => rations.find(r => r.id === s.ration_id)?.time_of_day === "PM").length;
+  const amUpcoming = (schedule || []).filter(s => (s.time_of_day || rations.find(r => r.id === s.ration_id)?.time_of_day) === "AM").length;
+  const pmUpcoming = (schedule || []).filter(s => (s.time_of_day || rations.find(r => r.id === s.ration_id)?.time_of_day) === "PM").length;
 
   return (
     <>
@@ -1540,19 +1573,54 @@ function removeFromQueue(eventId) {
   saveQueue(queue);
 }
 
+const REAL_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Placeholder ids (used when no real feed_events row exists yet) look like
+// "<pen_id>-AM" / "<pen_id>-PM". Recover pen/period from them so a queued
+// confirmation can still be healed even if it was queued before this fix.
+function parsePlaceholderId(id) {
+  const m = /^(.+)-(AM|PM)$/.exec(id || "");
+  return m ? { penId: m[1], timeOfDay: m[2] } : null;
+}
+
 async function flushQueue(setEvents) {
   const queue = loadQueue();
   if (queue.length === 0) return;
   for (const item of queue) {
     try {
-      await db.confirmEvent(item.eventId, item.confirmedBy);
+      let eventId = item.eventId;
+      if (!REAL_ID_RE.test(eventId)) {
+        // No real row existed yet when this was queued — (re)generate today's
+        // events from the schedule and look up the real id.
+        const parsed = parsePlaceholderId(item.eventId);
+        const penId = item.penId || parsed?.penId;
+        const timeOfDay = item.timeOfDay || parsed?.timeOfDay;
+        await db.generateTodayEvents();
+        const fresh = await db.getTodayEvents();
+        const real = (fresh || []).find(e => e.pen_id === penId && e.time_of_day === timeOfDay);
+        if (!real) {
+          // Can't be healed (pen/period no longer scheduled) — drop it instead
+          // of retrying forever.
+          removeFromQueue(item.eventId);
+          continue;
+        }
+        eventId = real.id;
+        if (fresh) setEvents(fresh);
+      }
+      await db.confirmEvent(eventId, item.confirmedBy);
       removeFromQueue(item.eventId);
       setEvents(prev => prev.map(e =>
-        e.id === item.eventId
+        e.id === eventId
           ? { ...e, status: "done", confirmed_by: item.confirmedBy, confirmed_at: item.confirmedAt }
           : e
       ));
-    } catch {}
+    } catch (err) {
+      // A real (non-network) rejection will never succeed by retrying —
+      // drop it so the queue doesn't sit "syncing" forever.
+      if (err && err.isNetworkError === false) {
+        removeFromQueue(item.eventId);
+      }
+    }
   }
 }
 
@@ -1568,7 +1636,7 @@ export default function App() {
   const [todaySchedule, setTodaySchedule] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [offlinePending, setOfflinePending] = useState(() => loadQueue().length);
+  const [offlinePending, setOfflinePending] = useState(0);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
 
   async function loadSchedules(penList) {
@@ -1608,14 +1676,21 @@ export default function App() {
   useEffect(() => {
     function handleOnline() {
       setIsOnline(true);
-      flushQueue(setEvents).then(() => setOfflinePending(loadQueue().length));
+      flushQueue(setEvents).then(() => {
+        const remaining = loadQueue().length;
+        setOfflinePending(remaining);
+      });
     }
     function handleOffline() { setIsOnline(false); }
     window.addEventListener("online", handleOnline);
     window.addEventListener("offline", handleOffline);
     // Flush any queued items from previous session on load
     if (navigator.onLine) {
-      flushQueue(setEvents).then(() => setOfflinePending(loadQueue().length));
+      const queuedItems = loadQueue().length;
+      if (queuedItems > 0) {
+        setOfflinePending(queuedItems);
+        flushQueue(setEvents).then(() => setOfflinePending(loadQueue().length));
+      }
     }
     return () => {
       window.removeEventListener("online", handleOnline);
@@ -1645,27 +1720,61 @@ export default function App() {
     return unsub;
   }, []);
 
-  const confirmEvent = useCallback(async (eventId, feederName) => {
+  const confirmEvent = useCallback(async (event, feederName) => {
     const confirmedAt = new Date().toISOString();
-    // Optimistic update immediately — works online or offline
-    setEvents(prev => prev.map(e =>
-      e.id === eventId
-        ? { ...e, status: "done", confirmed_by: feederName, confirmed_at: confirmedAt }
-        : e
-    ));
-    if (navigator.onLine) {
-      try {
-        await db.confirmEvent(eventId, feederName);
-        removeFromQueue(eventId);
-      } catch {
-        // Online but request failed — queue it
-        addToQueue({ eventId, confirmedBy: feederName, confirmedAt });
-        setOfflinePending(prev => prev + 1);
-      }
-    } else {
-      // Offline — queue for later
-      addToQueue({ eventId, confirmedBy: feederName, confirmedAt });
+    const isRealId = REAL_ID_RE.test(event.id);
+
+    // Optimistic update immediately, if we already have a real row for it
+    if (isRealId) {
+      setEvents(prev => prev.map(e =>
+        e.id === event.id
+          ? { ...e, status: "done", confirmed_by: feederName, confirmed_at: confirmedAt }
+          : e
+      ));
+    }
+
+    if (!navigator.onLine) {
+      // Genuinely offline — queue for later, carrying pen/period so it can be
+      // healed on flush even if no real event row exists yet.
+      addToQueue({ eventId: event.id, penId: event.pen_id, timeOfDay: event.time_of_day, confirmedBy: feederName, confirmedAt });
       setOfflinePending(prev => prev + 1);
+      return;
+    }
+
+    try {
+      let eventId = event.id;
+      if (!isRealId) {
+        // No real feed_events row yet — a schedule was likely added after
+        // today's events were generated. Regenerate and look up the real row.
+        await db.generateTodayEvents();
+        const fresh = await db.getTodayEvents();
+        const real = (fresh || []).find(e => e.pen_id === event.pen_id && e.time_of_day === event.time_of_day);
+        if (!real) {
+          const err = new Error("No feeding is scheduled for this pen/period today.");
+          err.isNetworkError = false;
+          throw err;
+        }
+        eventId = real.id;
+        if (fresh) setEvents(fresh);
+      }
+      await db.confirmEvent(eventId, feederName);
+      setEvents(prev => prev.map(e =>
+        e.id === eventId
+          ? { ...e, status: "done", confirmed_by: feederName, confirmed_at: confirmedAt }
+          : e
+      ));
+      removeFromQueue(event.id);
+    } catch (err) {
+      if (err && err.isNetworkError !== false) {
+        // Truly a connectivity failure — queue it, this is the legitimate offline path.
+        addToQueue({ eventId: event.id, penId: event.pen_id, timeOfDay: event.time_of_day, confirmedBy: feederName, confirmedAt });
+        setOfflinePending(prev => prev + 1);
+      } else {
+        // A real server-side rejection — retrying won't fix it, so surface it
+        // instead of silently queuing forever.
+        setError(err.message || "Failed to confirm feeding. Try again.");
+        setTimeout(() => setError(null), 4000);
+      }
     }
   }, []);
 
@@ -1696,8 +1805,10 @@ export default function App() {
       await db.upsertPenSchedule(rows);
       setPenSchedules(prev => {
         const existing = prev[penId] || [];
-        const newDates = new Set(rows.map(r => r.date));
-        const merged = existing.filter(r => !newDates.has(r.date)).concat(rows);
+        // Key on date + time_of_day, not just date — AM and PM are separate
+        // schedule slots for the same day and must not evict each other.
+        const newKeys = new Set(rows.map(r => `${r.date}|${r.time_of_day}`));
+        const merged = existing.filter(r => !newKeys.has(`${r.date}|${r.time_of_day}`)).concat(rows);
         return { ...prev, [penId]: merged.sort((a,b) => a.date.localeCompare(b.date)) };
       });
     } catch (err) {
